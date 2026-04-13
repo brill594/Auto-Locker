@@ -18,11 +18,13 @@ struct AdvancedView: View {
                             value: $store.advanced.foregroundScanIntervalSeconds,
                             in: 3...120
                         )
-                        Stepper(
-                            "信标页手动扫描时长 \(store.advanced.discoveryScanDurationSeconds) 秒",
+                        NumberInputRow(
+                            title: "信标页手动扫描时长",
                             value: $store.advanced.discoveryScanDurationSeconds,
-                            in: 5...120,
-                            step: 5
+                            range: 5...120,
+                            step: 5,
+                            suffix: "秒",
+                            fieldWidth: 88
                         )
                         Stepper(
                             "后台扫描参考周期 \(store.advanced.backgroundScanIntervalSeconds) 秒",

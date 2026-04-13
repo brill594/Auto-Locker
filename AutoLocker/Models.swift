@@ -81,6 +81,33 @@ enum BluetoothPowerState: String, Codable {
     }
 }
 
+enum LocationAuthorizationState: String {
+    case notDetermined
+    case restricted
+    case denied
+    case authorizedWhenInUse
+    case authorizedAlways
+
+    var label: String {
+        switch self {
+        case .notDetermined: return "未请求"
+        case .restricted: return "受限"
+        case .denied: return "已拒绝"
+        case .authorizedWhenInUse: return "使用时允许"
+        case .authorizedAlways: return "始终允许"
+        }
+    }
+
+    var allowsWiFiReading: Bool {
+        switch self {
+        case .authorizedWhenInUse, .authorizedAlways:
+            return true
+        case .notDetermined, .restricted, .denied:
+            return false
+        }
+    }
+}
+
 enum DetectionMode: String, Codable, CaseIterable, Identifiable {
     case missing
     case rssiThreshold

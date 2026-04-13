@@ -84,14 +84,6 @@ struct BeaconsView: View {
                         }
 
                         HStack {
-                            Button("长扫描 30 秒") {
-                                store.startManualScan(durationOverride: 30)
-                            }
-                            .disabled(store.guardEnabled || store.scanner.isScanning)
-                            Button("诊断扫描 120 秒") {
-                                store.startManualScan(durationOverride: 120)
-                            }
-                            .disabled(store.guardEnabled || store.scanner.isScanning)
                             Button("清空结果") {
                                 store.clearDiscoveredDevices()
                             }
@@ -103,17 +95,19 @@ struct BeaconsView: View {
                             Spacer()
                         }
 
-                        Stepper(
-                            "手动扫描时长 \(store.advanced.discoveryScanDurationSeconds) 秒",
+                        NumberInputRow(
+                            title: "手动扫描时长",
                             value: $store.advanced.discoveryScanDurationSeconds,
-                            in: 5...120,
-                            step: 5
+                            range: 5...120,
+                            step: 5,
+                            suffix: "秒",
+                            fieldWidth: 88
                         )
                         .disabled(store.guardEnabled)
 
                         Text(store.guardEnabled ? "守护开启时需要持续扫描；关闭守护后，手动扫描会按时长自动暂停，便于选择设备。" : "扫描结束后列表会停止刷新，便于选择并绑定设备。")
                             .foregroundStyle(.secondary)
-                        Text("如果设备在 nRF Connect 中显示为 Google / Service Data UUID FEF3，可使用诊断扫描并搜索 FEF3 或 Google。")
+                        Text("如果设备在 nRF Connect 中显示为 Google / Service Data UUID FEF3，可直接搜索 FEF3 或 Google，并在需要时导出诊断。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
@@ -499,7 +493,13 @@ private struct BeaconEditor: View {
                 GridRow {
                     Text("缺失容忍")
                         .foregroundStyle(.secondary)
-                    Stepper("\(beacon.missingTolerance) 个字段", value: $beacon.missingTolerance, in: 0...3)
+                    NumberInputRow(
+                        title: "",
+                        value: $beacon.missingTolerance,
+                        range: 0...3,
+                        suffix: "个字段",
+                        fieldWidth: 64
+                    )
                 }
             }
 
@@ -522,6 +522,9 @@ private struct BeaconEditor: View {
                         ))
                     }
                 }
+                Text("Manufacturer Data 默认不参与匹配；这类广播经常变化，只有设备广播足够稳定时才建议手动勾选。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)
@@ -566,6 +569,8 @@ private struct BeaconRuntimeStatusView: View {
             return .blue
         case .scanPaused, .notDetected:
             return .secondary
+        case .fieldMismatch:
+            return .orange
         case .notConfigured, .bluetoothUnavailable:
             return .red
         }

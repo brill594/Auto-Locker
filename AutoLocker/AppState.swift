@@ -19,15 +19,19 @@ final class AutoLockerStore: ObservableObject {
     @Published var timerLockDurationMinutes = 10
     @Published var stabilitySession: StabilityTestSession?
     @Published var lastStabilityResult: StabilityTestResult?
+    @Published var saveFeedbackMessage: String?
 
     let scanner = BluetoothScanner()
     let wifiMonitor = WiFiMonitor()
+    let locationPermissionMonitor = LocationPermissionMonitor()
 
     private let promptPresenter = PromptPresenter()
     private var cancellables: Set<AnyCancellable> = []
     private var evaluationTimer: Timer?
     private var promptTimer: Timer?
-    private var saveWorkItem: DispatchWorkItem?
+    private var runtimeSaveWorkItem: DispatchWorkItem?
+    private var configurationCommitWorkItem: DispatchWorkItem?
+    private var saveFeedbackDismissWorkItem: DispatchWorkItem?
     private let saveQueue = DispatchQueue(label: "AutoLocker.saveQueue", qos: .utility)
     private var missingStartedAt: Date?
     private var consecutiveMisses = 0
@@ -42,6 +46,7 @@ final class AutoLockerStore: ObservableObject {
         configureCallbacks()
         configureAutosave()
         configureSystemObservers()
+        locationPermissionMonitor.start()
         wifiMonitor.start()
         startEvaluationTimer()
 
@@ -56,12 +61,26 @@ final class AutoLockerStore: ObservableObject {
     deinit {
         evaluationTimer?.invalidate()
         promptTimer?.invalidate()
-        saveWorkItem?.cancel()
+        runtimeSaveWorkItem?.cancel()
+        configurationCommitWorkItem?.cancel()
+        saveFeedbackDismissWorkItem?.cancel()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     var currentSSID: String? {
         wifiMonitor.currentSSID
+    }
+
+    var locationAuthorizationState: LocationAuthorizationState {
+        locationPermissionMonitor.authorizationState
+    }
+
+    var locationAuthorizationLabel: String {
+        locationAuthorizationState.label
+    }
+
+    var locationPermissionAllowsWiFiReading: Bool {
+        locationAuthorizationState.allowsWiFiReading
     }
 
     var currentBSSID: String? {
@@ -229,6 +248,21 @@ final class AutoLockerStore: ObservableObject {
             status = .disabled
         }
         addLog(.resume, reason: reason)
+    }
+
+    func requestLocationPermissionIfNeeded() {
+        locationPermissionMonitor.requestAuthorizationIfNeeded()
+    }
+
+    func requestLocationPermission() {
+        locationPermissionMonitor.requestAuthorization()
+    }
+
+    func refreshNetworkContext() {
+        locationPermissionMonitor.refresh()
+        wifiMonitor.refresh()
+        objectWillChange.send()
+        evaluateGuard(trigger: "手动刷新网络状态")
     }
 
     func cancelPendingLock() {
@@ -588,21 +622,58 @@ final class AutoLockerStore: ObservableObject {
             self.objectWillChange.send()
             self.refreshAvailability(reason: "蓝牙状态变化：\(self.scanner.powerState.label)")
         }
+
+        Publishers.CombineLatest(
+            wifiMonitor.$currentSSID.removeDuplicates(),
+            wifiMonitor.$currentBSSID.removeDuplicates()
+        )
+        .dropFirst()
+        .sink { [weak self] _, _ in
+            guard let self else {
+                return
+            }
+            self.objectWillChange.send()
+            self.evaluateGuard(trigger: "Wi-Fi 状态更新")
+        }
+        .store(in: &cancellables)
+
+        locationPermissionMonitor.$authorizationState
+        .removeDuplicates()
+        .dropFirst()
+        .sink { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.objectWillChange.send()
+            self.wifiMonitor.refresh()
+        }
+        .store(in: &cancellables)
     }
 
     private func configureAutosave() {
+        Publishers.CombineLatest4(
+            $beacons
+                .map { [weak self] in self?.configurationBeaconSnapshots($0) ?? [] }
+                .removeDuplicates()
+                .eraseToAnyPublisher(),
+            $rules.removeDuplicates().eraseToAnyPublisher(),
+            $networkRules.removeDuplicates().eraseToAnyPublisher(),
+            $advanced.removeDuplicates().eraseToAnyPublisher()
+        )
+        .dropFirst()
+        .sink { [weak self] _, _, _, _ in
+            self?.scheduleConfigurationCommit()
+        }
+        .store(in: &cancellables)
+
         Publishers.MergeMany(
             $guardEnabled.map { _ in () }.eraseToAnyPublisher(),
-            $beacons.map { _ in () }.eraseToAnyPublisher(),
-            $rules.map { _ in () }.eraseToAnyPublisher(),
-            $networkRules.map { _ in () }.eraseToAnyPublisher(),
-            $advanced.map { _ in () }.eraseToAnyPublisher(),
             $logs.map { _ in () }.eraseToAnyPublisher(),
             $activePause.map { _ in () }.eraseToAnyPublisher()
         )
         .dropFirst()
         .sink { [weak self] _ in
-            self?.scheduleSave()
+            self?.scheduleRuntimeSave()
         }
         .store(in: &cancellables)
     }
@@ -1117,16 +1188,39 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
-    private func scheduleSave() {
-        saveWorkItem?.cancel()
+    private func scheduleRuntimeSave() {
+        runtimeSaveWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             self?.save()
         }
-        saveWorkItem = item
+        runtimeSaveWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
     }
 
-    private func save() {
+    private func scheduleConfigurationCommit() {
+        configurationCommitWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.applyConfigurationChanges()
+            self?.save(showFeedback: true, feedbackMessage: "配置已保存并应用")
+        }
+        configurationCommitWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: item)
+    }
+
+    private func applyConfigurationChanges() {
+        if status == .prompting {
+            promptTimer?.invalidate()
+            promptPresenter.close()
+            promptReason = ""
+            countdownRemaining = 0
+            status = guardEnabled ? .guarding : .disabled
+        }
+
+        resetAbsenceCounters()
+        evaluateGuard(trigger: "配置变更后应用")
+    }
+
+    private func save(showFeedback: Bool = false, feedbackMessage: String? = nil) {
         let state = PersistedState(
             guardEnabled: guardEnabled,
             beacons: beacons,
@@ -1150,12 +1244,28 @@ final class AutoLockerStore: ObservableObject {
                 encoder.dateEncodingStrategy = .iso8601
                 let data = try encoder.encode(state)
                 try data.write(to: stateFile, options: .atomic)
+                if showFeedback {
+                    DispatchQueue.main.async {
+                        self?.showSaveFeedback(feedbackMessage ?? "已保存")
+                    }
+                }
             } catch {
                 DispatchQueue.main.async {
                     self?.unavailableReason = "保存本地状态失败：\(error.localizedDescription)"
                 }
             }
         }
+    }
+
+    private func showSaveFeedback(_ message: String) {
+        saveFeedbackDismissWorkItem?.cancel()
+        saveFeedbackMessage = message
+
+        let item = DispatchWorkItem { [weak self] in
+            self?.saveFeedbackMessage = nil
+        }
+        saveFeedbackDismissWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: item)
     }
 
     @objc private func handleSessionBecameActive() {
@@ -1204,6 +1314,22 @@ final class AutoLockerStore: ObservableObject {
         Set(values.compactMap { normalized($0) })
     }
 
+    private func configurationBeaconSnapshots(_ beacons: [Beacon]) -> [BeaconConfigurationSnapshot] {
+        beacons.map {
+            BeaconConfigurationSnapshot(
+                id: $0.id,
+                displayName: $0.displayName,
+                expectedIdentifier: $0.expectedIdentifier,
+                expectedName: $0.expectedName,
+                expectedManufacturerDataHex: $0.expectedManufacturerDataHex,
+                selectedFields: $0.selectedFields,
+                missingTolerance: $0.missingTolerance,
+                isPrimary: $0.isPrimary,
+                createdAt: $0.createdAt
+            )
+        }
+    }
+
     private func normalizeLoadedBeacon(_ beacon: Beacon) -> Beacon {
         var beacon = beacon
         let legacyDefaultFields: Set<MatchField> = [.identifier, .name, .manufacturerData]
@@ -1233,6 +1359,18 @@ final class AutoLockerStore: ObservableObject {
         }
         return nil
     }
+}
+
+private struct BeaconConfigurationSnapshot: Equatable {
+    var id: UUID
+    var displayName: String
+    var expectedIdentifier: String?
+    var expectedName: String?
+    var expectedManufacturerDataHex: String?
+    var selectedFields: [MatchField]
+    var missingTolerance: Int
+    var isPrimary: Bool
+    var createdAt: Date
 }
 
 private struct BeaconMatchReport {

@@ -1,4 +1,5 @@
 import AppKit
+import CoreLocation
 import CoreWLAN
 import Foundation
 import UserNotifications
@@ -30,6 +31,63 @@ final class WiFiMonitor: ObservableObject {
 
         currentSSID = activeInterface?.ssid()
         currentBSSID = activeInterface?.bssid()
+    }
+}
+
+final class LocationPermissionMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published private(set) var authorizationState: LocationAuthorizationState = .notDetermined
+
+    private let manager = CLLocationManager()
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        refresh()
+    }
+
+    func start() {
+        refresh()
+    }
+
+    func refresh() {
+        authorizationState = Self.map(manager.authorizationStatus)
+    }
+
+    func requestAuthorizationIfNeeded() {
+        refresh()
+        guard authorizationState == .notDetermined else {
+            return
+        }
+        manager.requestWhenInUseAuthorization()
+    }
+
+    func requestAuthorization() {
+        refresh()
+        guard authorizationState == .notDetermined else {
+            return
+        }
+        manager.requestWhenInUseAuthorization()
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorizationState = Self.map(manager.authorizationStatus)
+    }
+
+    private static func map(_ status: CLAuthorizationStatus) -> LocationAuthorizationState {
+        switch status {
+        case .notDetermined:
+            return .notDetermined
+        case .restricted:
+            return .restricted
+        case .denied:
+            return .denied
+        case .authorizedWhenInUse:
+            return .authorizedWhenInUse
+        case .authorizedAlways:
+            return .authorizedAlways
+        @unknown default:
+            return .notDetermined
+        }
     }
 }
 

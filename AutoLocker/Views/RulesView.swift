@@ -20,7 +20,14 @@ struct RulesView: View {
                         }
                         .pickerStyle(.segmented)
 
-                        Stepper("离开条件持续 \(store.rules.delaySeconds) 秒后进入提示", value: $store.rules.delaySeconds, in: 5...600, step: 5)
+                        NumberInputRow(
+                            title: "离开条件持续",
+                            value: $store.rules.delaySeconds,
+                            range: 5...600,
+                            step: 5,
+                            suffix: "秒",
+                            fieldWidth: 88
+                        )
 
                         if store.rules.detectionMode == .rssiThreshold {
                             Slider(
@@ -33,7 +40,13 @@ struct RulesView: View {
                             ) {
                                 Text("RSSI 阈值")
                             }
-                            InfoLine(title: "RSSI 阈值", value: "\(store.rules.rssiThreshold) dBm")
+                            NumberInputRow(
+                                title: "RSSI 阈值",
+                                value: $store.rules.rssiThreshold,
+                                range: -100 ... -40,
+                                suffix: "dBm",
+                                fieldWidth: 88
+                            )
                         }
                     }
                     .padding(4)
@@ -51,10 +64,12 @@ struct RulesView: View {
                         .pickerStyle(.segmented)
 
                         if store.rules.debounceStrategy == .consecutiveMisses {
-                            Stepper(
-                                "连续丢失 \(store.rules.requiredConsecutiveMisses) 次后允许触发",
+                            NumberInputRow(
+                                title: "连续丢失次数",
                                 value: $store.rules.requiredConsecutiveMisses,
-                                in: 2...20
+                                range: 2...20,
+                                suffix: "次",
+                                fieldWidth: 72
                             )
                         }
 
@@ -76,10 +91,12 @@ struct RulesView: View {
                         .pickerStyle(.segmented)
 
                         if store.rules.multiBeaconLogic == .atLeast {
-                            Stepper(
-                                "至少 \(store.rules.requiredBeaconCount) 个信标在场",
+                            NumberInputRow(
+                                title: "至少在场信标",
                                 value: $store.rules.requiredBeaconCount,
-                                in: 1...max(1, store.beacons.count)
+                                range: 1...max(1, store.beacons.count),
+                                suffix: "个",
+                                fieldWidth: 72
                             )
                         }
                     }
@@ -90,23 +107,29 @@ struct RulesView: View {
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
-                        Stepper(
-                            "提示倒计时 \(store.rules.preLockCountdownSeconds) 秒",
+                        NumberInputRow(
+                            title: "提示倒计时",
                             value: $store.rules.preLockCountdownSeconds,
-                            in: 3...120
+                            range: 3...120,
+                            suffix: "秒",
+                            fieldWidth: 80
                         )
 
-                        Stepper(
-                            "\(store.rules.cancelWindowMinutes) 分钟内取消 \(store.rules.cancelThreshold) 次后建议暂停",
+                        NumberInputRow(
+                            title: "建议暂停阈值",
                             value: $store.rules.cancelThreshold,
-                            in: 1...10
+                            range: 1...10,
+                            suffix: "次",
+                            fieldWidth: 72
                         )
 
-                        Stepper(
-                            "频繁取消窗口 \(store.rules.cancelWindowMinutes) 分钟",
+                        NumberInputRow(
+                            title: "频繁取消窗口",
                             value: $store.rules.cancelWindowMinutes,
-                            in: 5...60,
-                            step: 5
+                            range: 5...60,
+                            step: 5,
+                            suffix: "分钟",
+                            fieldWidth: 80
                         )
                     }
                     .padding(4)

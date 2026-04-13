@@ -3,6 +3,11 @@ import SwiftUI
 struct OverviewView: View {
     @EnvironmentObject private var store: AutoLockerStore
     @State private var customPauseUntil = Date().addingTimeInterval(30 * 60)
+    @State private var topCardMinHeight: CGFloat = 0
+
+    private var recentEvents: [EventLog] {
+        Array(store.logs.prefix(2))
+    }
 
     var body: some View {
         ScrollView {
@@ -48,38 +53,53 @@ struct OverviewView: View {
                                     .foregroundStyle(.orange)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(4)
                     } label: {
                         Label("当前状态", systemImage: "gauge.with.dots.needle.67percent")
                     }
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: topCardMinHeight == 0 ? nil : topCardMinHeight,
+                        alignment: .topLeading
+                    )
+                    .overviewTopCardHeightReader()
 
                     GroupBox {
                         VStack(alignment: .leading, spacing: 14) {
-                            if let event = store.recentEvent {
-                                Text(event.type.label)
-                                    .font(.title3.weight(.semibold))
-                                Text(event.displayReason)
-                                    .foregroundStyle(.secondary)
-                                Text(event.timestamp.autoLockerShortText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Button("打开日志") {
-                                    store.selectedSection = .logs
-                                }
-                            } else {
+                            if recentEvents.isEmpty {
                                 EmptyState(
                                     systemImage: "list.bullet.rectangle",
                                     title: "暂无事件",
                                     message: "开启扫描、绑定信标或触发锁屏后，事件会记录在这里。"
                                 )
+                            } else {
+                                ForEach(Array(recentEvents.enumerated()), id: \.element.id) { index, event in
+                                    if index > 0 {
+                                        Divider()
+                                    }
+
+                                    RecentEventSummary(log: event)
+                                }
+
+                                Button("打开日志") {
+                                    store.selectedSection = .logs
+                                }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(4)
                     } label: {
                         Label("最近事件", systemImage: "clock.arrow.circlepath")
                     }
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: topCardMinHeight == 0 ? nil : topCardMinHeight,
+                        alignment: .topLeading
+                    )
+                    .overviewTopCardHeightReader()
                 }
+                .onPreferenceChange(OverviewTopCardHeightPreferenceKey.self) { topCardMinHeight = $0 }
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 14) {
@@ -133,17 +153,19 @@ struct OverviewView: View {
                         HStack {
                             Button("下次解锁后恢复") { store.pause(.nextUnlock) }
                             Button("离开当前 Wi-Fi 后恢复") { store.pause(.wifiLeaves) }
-                                .disabled(store.currentSSID == nil)
+                                .disabled(store.currentWiFiDisplay == nil)
                             DatePicker("自定义恢复时间", selection: $customPauseUntil, displayedComponents: [.hourAndMinute])
                             Button("暂停至该时间") {
                                 store.pause(.custom, customUntil: customPauseUntil)
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(4)
                 } label: {
                     Label("暂停守护", systemImage: "clock.badge.pause")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
@@ -160,5 +182,44 @@ struct OverviewView: View {
             }
             .padding(24)
         }
+    }
+}
+
+private struct RecentEventSummary: View {
+    let log: EventLog
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(log.type.label)
+                .font(.title3.weight(.semibold))
+            Text(log.displayReason)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text(log.timestamp.autoLockerShortText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct OverviewTopCardHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    func overviewTopCardHeightReader() -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: OverviewTopCardHeightPreferenceKey.self,
+                    value: proxy.size.height
+                )
+            }
+        )
     }
 }

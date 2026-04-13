@@ -11,22 +11,31 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
         } detail: {
-            Group {
-                switch store.selectedSection {
-                case .overview:
-                    OverviewView()
-                case .beacons:
-                    BeaconsView()
-                case .rules:
-                    RulesView()
-                case .network:
-                    NetworkRulesView()
-                case .logs:
-                    LogView()
-                case .advanced:
-                    AdvancedView()
+            ZStack(alignment: .top) {
+                Group {
+                    switch store.selectedSection {
+                    case .overview:
+                        OverviewView()
+                    case .beacons:
+                        BeaconsView()
+                    case .rules:
+                        RulesView()
+                    case .network:
+                        NetworkRulesView()
+                    case .logs:
+                        LogView()
+                    case .advanced:
+                        AdvancedView()
+                    }
+                }
+
+                if let message = store.saveFeedbackMessage {
+                    SaveFeedbackBanner(message: message)
+                        .padding(.top, 14)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .animation(.easeInOut(duration: 0.2), value: store.saveFeedbackMessage)
             .environmentObject(store)
             .toolbar {
                 ToolbarItem(placement: .navigation) {
@@ -41,6 +50,24 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+private struct SaveFeedbackBanner: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "checkmark.circle.fill")
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .foregroundStyle(.green)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(.green.opacity(0.2))
+            )
+            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
     }
 }
 
