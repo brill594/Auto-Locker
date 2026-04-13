@@ -27,7 +27,7 @@ struct BeaconsView: View {
                         HStack {
                             Image(systemName: "magnifyingglass")
                                 .foregroundStyle(.secondary)
-                            TextField("搜索设备名、厂商、厂商数据、系统标识符", text: $searchText)
+                            TextField("搜索设备名、厂商、厂商数据、Service UUID / Data、系统标识符", text: $searchText)
                                 .textFieldStyle(.plain)
                             if !searchText.isEmpty {
                                 Button("清除") {
@@ -55,7 +55,7 @@ struct BeaconsView: View {
                             .frame(width: 140)
                         }
 
-                        Text("macOS 的 CoreBluetooth 不暴露真实 MAC 地址；这里会搜索系统设备标识符、设备名、厂商名和 Manufacturer Data。")
+                        Text("macOS 的 CoreBluetooth 不暴露真实 MAC 地址；这里会搜索系统设备标识符、设备名、厂商名、Manufacturer Data、Service UUID 和 Service Data。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -80,14 +80,26 @@ struct BeaconsView: View {
                                 .disabled(store.guardEnabled && store.scanner.isScanning)
                                 .buttonStyle(.borderedProminent)
                             }
+                        }
+
+                        HStack {
                             Button("长扫描 30 秒") {
                                 store.startManualScan(durationOverride: 30)
+                            }
+                            .disabled(store.guardEnabled || store.scanner.isScanning)
+                            Button("诊断扫描 120 秒") {
+                                store.startManualScan(durationOverride: 120)
                             }
                             .disabled(store.guardEnabled || store.scanner.isScanning)
                             Button("清空结果") {
                                 store.clearDiscoveredDevices()
                             }
                             .disabled(store.scanner.devices.isEmpty || store.scanner.isScanning)
+                            Button("导出诊断") {
+                                store.exportScanDiagnostics()
+                            }
+                            .disabled(store.scanner.devices.isEmpty)
+                            Spacer()
                         }
 
                         Stepper(
@@ -99,6 +111,9 @@ struct BeaconsView: View {
                         .disabled(store.guardEnabled)
 
                         Text(store.guardEnabled ? "守护开启时需要持续扫描；关闭守护后，手动扫描会按时长自动暂停，便于选择设备。" : "扫描结束后列表会停止刷新，便于选择并绑定设备。")
+                            .foregroundStyle(.secondary)
+                        Text("如果设备在 nRF Connect 中显示为 Google / Service Data UUID FEF3，可使用诊断扫描并搜索 FEF3 或 Google。")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
 
                         if let error = store.scanner.lastError {
@@ -132,16 +147,33 @@ struct BeaconsView: View {
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(device.displayName)
                                                 .font(.headline)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                             Text(device.manufacturerDisplayName ?? "厂商未识别")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                             Text(device.summary)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                                .truncationMode(.middle)
+                                            if !device.rawFieldSummary.isEmpty {
+                                                Text(device.rawFieldSummary)
+                                                    .font(.caption2.monospaced())
+                                                    .foregroundStyle(.tertiary)
+                                                    .lineLimit(2)
+                                                    .truncationMode(.middle)
+                                                    .textSelection(.enabled)
+                                            }
                                             Text(device.identifier)
                                                 .font(.caption2.monospaced())
                                                 .foregroundStyle(.tertiary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                         Spacer()
                                         if store.beacons.contains(where: { $0.expectedIdentifier == device.identifier }) {
                                             Text("已绑定")
@@ -516,7 +548,18 @@ private extension DiscoveredDevice {
             manufacturerDataHex,
             manufacturerName,
             manufacturerDisplayName,
-            manufacturerCompanyID.map { String(format: "0x%04X", Int($0)) }
+            manufacturerCompanyID.map { String(format: "0x%04X", Int($0)) },
+            serviceUUIDVendorName,
+            serviceUUIDVendorMatch?.displayUUID,
+            serviceUUIDs.joined(separator: " "),
+            solicitedServiceUUIDs.joined(separator: " "),
+            overflowServiceUUIDs.joined(separator: " "),
+            serviceDataHex.keys.sorted().joined(separator: " "),
+            serviceDataHex.values.sorted().joined(separator: " "),
+            txPowerLevel.map { String($0) },
+            isConnectable.map { $0 ? "connectable yes 可连接" : "connectable no 不可连接" },
+            rawFieldSummary,
+            advertisementKeys.joined(separator: " ")
         ])
     }
 }

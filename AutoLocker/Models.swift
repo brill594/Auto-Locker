@@ -239,19 +239,48 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
         if let localName, !localName.isEmpty {
             return localName
         }
+        if let serviceUUIDVendorName {
+            return "\(serviceUUIDVendorName) 广播"
+        }
         return "未命名设备"
     }
 
     var manufacturerName: String? {
-        manufacturerCompanyID.flatMap { ManufacturerDirectory.name(for: $0) }
+        if let manufacturerCompanyID {
+            return ManufacturerDirectory.name(for: manufacturerCompanyID)
+        }
+        return serviceUUIDVendorName
     }
 
     var manufacturerDisplayName: String? {
-        manufacturerCompanyID.map { ManufacturerDirectory.displayName(for: $0) }
+        if let manufacturerCompanyID {
+            return ManufacturerDirectory.displayName(for: manufacturerCompanyID)
+        }
+        if let serviceUUIDVendorMatch {
+            return "\(serviceUUIDVendorMatch.name) (Service UUID \(serviceUUIDVendorMatch.displayUUID))"
+        }
+        return nil
     }
 
     var manufacturerIconSystemName: String? {
         ManufacturerDirectory.iconSystemName(for: manufacturerCompanyID)
+            ?? BluetoothMemberUUIDDirectory.iconSystemName(for: serviceUUIDVendorName)
+    }
+
+    var serviceUUIDVendorName: String? {
+        serviceUUIDVendorMatch?.name
+    }
+
+    var serviceUUIDVendorMatch: MemberUUIDVendorMatch? {
+        BluetoothMemberUUIDDirectory.match(for: advertisedServiceUUIDs)
+    }
+
+    var advertisedServiceUUIDs: [String] {
+        let values = serviceUUIDs + solicitedServiceUUIDs + overflowServiceUUIDs + serviceDataHex.keys.sorted()
+        var seen = Set<String>()
+        return values.filter { uuid in
+            seen.insert(BluetoothMemberUUIDDirectory.normalizedUUID(uuid)).inserted
+        }
     }
 
     var summary: String {
@@ -265,6 +294,9 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
         if !serviceUUIDs.isEmpty {
             parts.append("服务 \(serviceUUIDs.prefix(3).joined(separator: ", "))")
         }
+        if !serviceDataHex.isEmpty {
+            parts.append("Service Data \(serviceDataHex.keys.sorted().prefix(3).joined(separator: ", "))")
+        }
         if let isConnectable {
             parts.append(isConnectable ? "可连接" : "不可连接")
         }
@@ -276,14 +308,296 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
         if !serviceUUIDs.isEmpty {
             parts.append("Service UUIDs: \(serviceUUIDs.joined(separator: ", "))")
         }
+        if !solicitedServiceUUIDs.isEmpty {
+            parts.append("Solicited UUIDs: \(solicitedServiceUUIDs.joined(separator: ", "))")
+        }
+        if !overflowServiceUUIDs.isEmpty {
+            parts.append("Overflow UUIDs: \(overflowServiceUUIDs.joined(separator: ", "))")
+        }
         if !serviceDataHex.isEmpty {
             let serviceData = serviceDataHex.keys.sorted().map { "\($0)=\(serviceDataHex[$0] ?? "")" }
             parts.append("Service Data: \(serviceData.joined(separator: ", "))")
+        }
+        if let txPowerLevel {
+            parts.append("Tx Power: \(txPowerLevel)")
+        }
+        if let isConnectable {
+            parts.append("Connectable: \(isConnectable ? "yes" : "no")")
         }
         if !advertisementKeys.isEmpty {
             parts.append("Keys: \(advertisementKeys.joined(separator: ", "))")
         }
         return parts.joined(separator: " · ")
+    }
+
+    func mergingAdvertisementUpdate(_ update: DiscoveredDevice) -> DiscoveredDevice {
+        var merged = update
+        merged.id = id
+        merged.name = update.name.isEmpty ? name : update.name
+        merged.localName = update.localName ?? localName
+        merged.manufacturerDataHex = update.manufacturerDataHex ?? manufacturerDataHex
+        merged.manufacturerCompanyID = update.manufacturerCompanyID ?? manufacturerCompanyID
+        merged.serviceUUIDs = mergedUnique(existing: serviceUUIDs, latest: update.serviceUUIDs)
+        merged.solicitedServiceUUIDs = mergedUnique(existing: solicitedServiceUUIDs, latest: update.solicitedServiceUUIDs)
+        merged.overflowServiceUUIDs = mergedUnique(existing: overflowServiceUUIDs, latest: update.overflowServiceUUIDs)
+        merged.serviceDataHex = serviceDataHex.merging(update.serviceDataHex) { _, latest in latest }
+        merged.txPowerLevel = update.txPowerLevel ?? txPowerLevel
+        merged.isConnectable = update.isConnectable ?? isConnectable
+        merged.advertisementKeys = mergedUnique(existing: advertisementKeys, latest: update.advertisementKeys)
+        return merged
+    }
+
+    func isLikelySameAdvertisement(as other: DiscoveredDevice) -> Bool {
+        if id == other.id || identifier == other.identifier {
+            return true
+        }
+
+        if let manufacturerDataHex,
+           let otherManufacturerDataHex = other.manufacturerDataHex,
+           !manufacturerDataHex.isEmpty,
+           manufacturerDataHex == otherManufacturerDataHex {
+            return true
+        }
+
+        if !serviceDataHex.isEmpty,
+           serviceDataHex == other.serviceDataHex {
+            return true
+        }
+
+        if rawNameForIdentity != nil,
+           rawNameForIdentity == other.rawNameForIdentity,
+           manufacturerCompanyID != nil,
+           manufacturerCompanyID == other.manufacturerCompanyID {
+            return true
+        }
+
+        guard abs(lastSeen.timeIntervalSince(other.lastSeen)) <= 10 * 60 else {
+            return false
+        }
+
+        let serviceDataKeys = normalizedUUIDSet(serviceDataHex.keys)
+        let otherServiceDataKeys = normalizedUUIDSet(other.serviceDataHex.keys)
+        guard !serviceDataKeys.intersection(otherServiceDataKeys).isEmpty else {
+            return false
+        }
+
+        let serviceUUIDSet = normalizedUUIDSet(advertisedServiceUUIDs)
+        let otherServiceUUIDSet = normalizedUUIDSet(other.advertisedServiceUUIDs)
+        guard serviceUUIDSet == otherServiceUUIDSet else {
+            return false
+        }
+
+        if rawNameForIdentity != nil,
+           rawNameForIdentity == other.rawNameForIdentity {
+            return true
+        }
+
+        if serviceUUIDVendorName != nil,
+           serviceUUIDVendorName == other.serviceUUIDVendorName,
+           isConnectable == other.isConnectable,
+           abs(rssi - other.rssi) <= 20 {
+            return true
+        }
+
+        return false
+    }
+
+    private func mergedUnique(existing: [String], latest: [String]) -> [String] {
+        var seen = Set<String>()
+        return (existing + latest).filter { value in
+            seen.insert(value).inserted
+        }
+    }
+
+    private var rawNameForIdentity: String? {
+        let value: String?
+        if !name.isEmpty {
+            value = name
+        } else {
+            value = localName
+        }
+
+        guard let value else {
+            return nil
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private func normalizedUUIDSet<S: Sequence>(_ values: S) -> Set<String> where S.Element == String {
+        Set(values.map { BluetoothMemberUUIDDirectory.normalizedUUID($0) })
+    }
+}
+
+struct MemberUUIDVendorMatch: Hashable {
+    var uuid: String
+    var name: String
+
+    var displayUUID: String {
+        let normalized = BluetoothMemberUUIDDirectory.normalizedUUID(uuid)
+        if normalized.count == 4 {
+            return "0x\(normalized)"
+        }
+        return uuid
+    }
+}
+
+// Member UUIDs are used by many non-connectable advertisements, including the Google 0xFEF3 packet shown by nRF Connect.
+// Source: https://bitbucket.org/bluetooth-SIG/public/src/HEAD/assigned_numbers/uuids/member_uuids.yaml
+enum BluetoothMemberUUIDDirectory {
+    static let memberUUIDNames: [String: String] = [
+        "FC3E": "Google LLC",
+        "FC46": "Xiaomi",
+        "FC56": "Google LLC",
+        "FC66": "Xiaomi Inc.",
+        "FC73": "Google LLC",
+        "FC75": "Xiaomi Inc.",
+        "FC8F": "Bose Corporation",
+        "FC91": "Samsung Electronics Co., Ltd.",
+        "FC94": "Apple Inc.",
+        "FCA0": "Apple Inc.",
+        "FCB1": "Google LLC",
+        "FCB2": "Apple Inc.",
+        "FCC0": "Xiaomi Inc.",
+        "FCCF": "Google LLC",
+        "FCDC": "Amazon.com Services, LLC",
+        "FCE1": "Sony Group Corporation",
+        "FCF1": "Google LLC",
+        "FD1D": "Samsung Electronics Co., Ltd",
+        "FD21": "Huawei Technologies Co., Ltd.",
+        "FD22": "Huawei Technologies Co., Ltd.",
+        "FD2A": "Sony Corporation",
+        "FD2D": "Xiaomi Inc.",
+        "FD36": "Google LLC",
+        "FD41": "Amazon Lab126",
+        "FD43": "Apple Inc.",
+        "FD44": "Apple Inc.",
+        "FD4B": "Samsung Electronics Co., Ltd.",
+        "FD59": "Samsung Electronics Co., Ltd.",
+        "FD5A": "Samsung Electronics Co., Ltd.",
+        "FD5F": "Meta Platforms Technologies, LLC",
+        "FD62": "Google LLC",
+        "FD63": "Google LLC",
+        "FD69": "Samsung Electronics Co., Ltd",
+        "FD6C": "Samsung Electronics Co., Ltd.",
+        "FD6F": "Apple, Inc.",
+        "FD7E": "Samsung Electronics Co., Ltd.",
+        "FD82": "Sony Corporation",
+        "FD84": "Tile, Inc.",
+        "FD87": "Google LLC",
+        "FD8C": "Google LLC",
+        "FD96": "Google LLC",
+        "FD9A": "Huawei Technologies Co., Ltd.",
+        "FD9B": "Huawei Technologies Co., Ltd.",
+        "FD9C": "Huawei Technologies Co., Ltd.",
+        "FDAA": "Xiaomi Inc.",
+        "FDAB": "Xiaomi Inc.",
+        "FDB0": "Oura Health Ltd",
+        "FDB1": "Oura Health Ltd",
+        "FDD0": "Huawei Technologies Co., Ltd",
+        "FDD1": "Huawei Technologies Co., Ltd",
+        "FDD2": "Bose Corporation",
+        "FDDB": "Samsung Electronics Co., Ltd.",
+        "FDE2": "Google LLC",
+        "FDEE": "Huawei Technologies Co., Ltd.",
+        "FDF0": "Google LLC",
+        "FE00": "Amazon.com Services, Inc.",
+        "FE03": "Amazon.com Services, Inc.",
+        "FE08": "Microsoft",
+        "FE13": "Apple Inc.",
+        "FE15": "Amazon.com Services, Inc..",
+        "FE19": "Google LLC",
+        "FE21": "Bose Corporation",
+        "FE25": "Apple, Inc.",
+        "FE26": "Google LLC",
+        "FE27": "Google LLC",
+        "FE2C": "Google LLC",
+        "FE35": "HUAWEI Technologies Co., Ltd",
+        "FE36": "HUAWEI Technologies Co., Ltd",
+        "FE50": "Google LLC",
+        "FE55": "Google LLC",
+        "FE56": "Google LLC",
+        "FE58": "Nordic Semiconductor ASA",
+        "FE59": "Nordic Semiconductor ASA",
+        "FE86": "HUAWEI Technologies Co., Ltd",
+        "FE8A": "Apple, Inc.",
+        "FE8B": "Apple, Inc.",
+        "FE95": "Xiaomi Inc.",
+        "FE9F": "Google LLC",
+        "FEA0": "Google LLC",
+        "FEAA": "Google LLC",
+        "FEB2": "Microsoft Corporation",
+        "FEB7": "Meta Platforms, Inc.",
+        "FEB8": "Meta Platforms, Inc.",
+        "FEBE": "Bose Corporation",
+        "FECE": "Apple, Inc.",
+        "FECF": "Apple, Inc.",
+        "FED0": "Apple, Inc.",
+        "FED1": "Apple, Inc.",
+        "FED2": "Apple, Inc.",
+        "FED3": "Apple, Inc.",
+        "FED4": "Apple, Inc.",
+        "FED8": "Google LLC",
+        "FEEC": "Tile, Inc.",
+        "FEED": "Tile, Inc.",
+        "FEF3": "Google LLC",
+        "FEF4": "Google LLC"
+    ]
+
+    static func match(for uuids: [String]) -> MemberUUIDVendorMatch? {
+        for uuid in uuids {
+            let normalized = normalizedUUID(uuid)
+            if let name = memberUUIDNames[normalized] {
+                return MemberUUIDVendorMatch(uuid: normalized, name: name)
+            }
+        }
+        return nil
+    }
+
+    static func normalizedUUID(_ uuid: String) -> String {
+        let allowedHexCharacters = Set("0123456789ABCDEF")
+        let compact = uuid.uppercased().filter { allowedHexCharacters.contains($0) }
+        let bluetoothBaseUUIDSuffix = "00001000800000805F9B34FB"
+        if compact.count == 32,
+           compact.hasPrefix("0000"),
+           compact.hasSuffix(bluetoothBaseUUIDSuffix) {
+            let start = compact.index(compact.startIndex, offsetBy: 4)
+            let end = compact.index(start, offsetBy: 4)
+            return String(compact[start..<end])
+        }
+        return compact
+    }
+
+    static func iconSystemName(for name: String?) -> String? {
+        guard let name else {
+            return nil
+        }
+        let normalized = name.lowercased()
+        if normalized.contains("google") {
+            return "globe"
+        }
+        if normalized.contains("apple") {
+            return "apple.logo"
+        }
+        if normalized.contains("bose") {
+            return "headphones"
+        }
+        if normalized.contains("samsung") || normalized.contains("huawei") || normalized.contains("xiaomi") {
+            return "iphone"
+        }
+        if normalized.contains("oura") {
+            return "heart.circle"
+        }
+        if normalized.contains("tile") {
+            return "location.circle"
+        }
+        if normalized.contains("nordic") {
+            return "cpu"
+        }
+        if normalized.contains("amazon") || normalized.contains("microsoft") || normalized.contains("meta") {
+            return "globe"
+        }
+        return nil
     }
 }
 
@@ -506,6 +820,13 @@ struct PersistedState: Codable {
     var advanced: AdvancedSettings
     var logs: [EventLog]
     var activePause: ActivePause?
+}
+
+struct ScanDiagnosticsExport: Codable {
+    var exportedAt: Date
+    var bluetoothState: BluetoothPowerState
+    var isScanning: Bool
+    var devices: [DiscoveredDevice]
 }
 
 struct StabilityTestResult: Codable, Equatable {

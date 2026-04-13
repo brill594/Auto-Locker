@@ -28,8 +28,11 @@ final class AutoLockerStore: ObservableObject {
     private var evaluationTimer: Timer?
     private var promptTimer: Timer?
     private var saveWorkItem: DispatchWorkItem?
+    private let saveQueue = DispatchQueue(label: "AutoLocker.saveQueue", qos: .utility)
     private var missingStartedAt: Date?
     private var consecutiveMisses = 0
+    private var guardScanGraceUntil: Date?
+    private var recoveredScanForCurrentAbsence = false
     private var networkSuppressionSSID: String?
     private var lastUnavailableLogReason: String?
 
@@ -129,6 +132,9 @@ final class AutoLockerStore: ObservableObject {
     func bind(_ device: DiscoveredDevice) {
         if beacons.contains(where: { $0.expectedIdentifier == device.identifier }) {
             return
+        }
+        if !guardEnabled && scanner.isScanning {
+            scanner.stopScanning()
         }
         var beacon = Beacon(from: device)
         beacon.isPrimary = beacons.isEmpty
@@ -285,6 +291,33 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
+    func exportScanDiagnostics() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "auto-locker-scan-diagnostics.json"
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else {
+                return
+            }
+            do {
+                let payload = ScanDiagnosticsExport(
+                    exportedAt: Date(),
+                    bluetoothState: self.scanner.powerState,
+                    isScanning: self.scanner.isScanning,
+                    devices: self.scanner.devices
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(payload)
+                try data.write(to: url, options: .atomic)
+                self.addLog(.scan, reason: "导出扫描诊断：\(url.lastPathComponent)")
+            } catch {
+                self.addLog(.unavailable, reason: "导出扫描诊断失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
     func startStabilityTest(for beacon: Beacon) {
         stabilitySession = StabilityTestSession(beaconID: beacon.id)
         lastStabilityResult = nil
@@ -316,7 +349,7 @@ final class AutoLockerStore: ObservableObject {
 
     func currentPresenceSummary() -> String {
         let now = Date()
-        let count = beacons.filter { presence(for: $0, now: now).isPresent }.count
+        let count = beacons.filter { presence(for: $0, now: now, updateBeaconState: false).isPresent }.count
         if beacons.isEmpty {
             return "尚未绑定信标"
         }
@@ -363,6 +396,24 @@ final class AutoLockerStore: ObservableObject {
             self,
             selector: #selector(handleSessionBecameActive),
             name: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSessionBecameInactive),
+            name: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleSystemDidWake),
+            name: NSWorkspace.screensDidWakeNotification,
             object: nil
         )
     }
@@ -434,6 +485,47 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
+    private var guardScanRecoveryGraceSeconds: TimeInterval {
+        max(15, Double(rules.delaySeconds), min(Double(advanced.lowFrequencyScanIntervalSeconds), 60))
+    }
+
+    private func guardScanGraceIsActive(now: Date) -> Bool {
+        guard let guardScanGraceUntil else {
+            return false
+        }
+        if now < guardScanGraceUntil {
+            return true
+        }
+        self.guardScanGraceUntil = nil
+        return false
+    }
+
+    private func recoverGuardScanningAfterSystemInterruption(
+        reason: String,
+        resetScanRecovery: Bool = true
+    ) {
+        guard guardEnabled else {
+            return
+        }
+
+        let now = Date()
+        let alreadyInGrace = guardScanGraceUntil.map { now < $0 } ?? false
+        if scanner.powerState == .poweredOn {
+            scanner.restartScanning()
+        } else {
+            scanner.startScanning()
+        }
+
+        let graceSeconds = guardScanRecoveryGraceSeconds
+        guardScanGraceUntil = now.addingTimeInterval(graceSeconds)
+        resetAbsenceCounters(resetScanRecovery: resetScanRecovery)
+        status = activePause == nil ? .guarding : .paused
+
+        if !alreadyInGrace {
+            addLog(.scan, reason: "\(reason)，\(Int(graceSeconds)) 秒内暂缓离开判定")
+        }
+    }
+
     private func evaluateGuard(trigger: String) {
         if status == .prompting {
             return
@@ -464,6 +556,11 @@ final class AutoLockerStore: ObservableObject {
         }
 
         let now = Date()
+        if guardScanGraceIsActive(now: now) {
+            resetAbsenceCounters(resetScanRecovery: false)
+            return
+        }
+
         let presences = beacons.map { presence(for: $0, now: now) }
         let presentCount = presences.filter(\.isPresent).count
         let shouldBePresent = requiredPresentCount()
@@ -494,6 +591,15 @@ final class AutoLockerStore: ObservableObject {
         let enoughMisses = rules.debounceStrategy == .delayOnly || consecutiveMisses >= rules.requiredConsecutiveMisses
 
         if enoughTime && enoughMisses {
+            if !recoveredScanForCurrentAbsence && scanner.powerState == .poweredOn {
+                recoveredScanForCurrentAbsence = true
+                recoverGuardScanningAfterSystemInterruption(
+                    reason: "离开判定前重启蓝牙扫描确认",
+                    resetScanRecovery: false
+                )
+                return
+            }
+
             let reason = "离开条件满足：\(presentCount)/\(beacons.count) 个信标在场，规则为 \(rules.summary)"
             beginPreLockPrompt(reason: reason)
         }
@@ -612,12 +718,16 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
-    private func presence(for beacon: Beacon, now: Date) -> (isPresent: Bool, device: DiscoveredDevice?) {
+    private func presence(
+        for beacon: Beacon,
+        now: Date,
+        updateBeaconState: Bool = true
+    ) -> (isPresent: Bool, device: DiscoveredDevice?) {
         guard let device = scanner.devices.first(where: { deviceMatches($0, beacon: beacon) }) else {
             return (false, nil)
         }
 
-        if let index = beacons.firstIndex(where: { $0.id == beacon.id }) {
+        if updateBeaconState, let index = beacons.firstIndex(where: { $0.id == beacon.id }) {
             beacons[index].lastSeen = device.lastSeen
             beacons[index].lastRSSI = device.rssi
             beacons[index].manufacturerCompanyID = device.manufacturerCompanyID
@@ -695,9 +805,12 @@ final class AutoLockerStore: ObservableObject {
         return matched > 0 && missing <= beacon.missingTolerance
     }
 
-    private func resetAbsenceCounters() {
+    private func resetAbsenceCounters(resetScanRecovery: Bool = true) {
         missingStartedAt = nil
         consecutiveMisses = 0
+        if resetScanRecovery {
+            recoveredScanForCurrentAbsence = false
+        }
     }
 
     private func evaluateStabilityTestSample() {
@@ -708,7 +821,7 @@ final class AutoLockerStore: ObservableObject {
         }
 
         let now = Date()
-        let sample = presence(for: beacon, now: now).device
+        let sample = presence(for: beacon, now: now, updateBeaconState: false).device
         session.samples.append((date: now, rssi: sample?.rssi))
         stabilitySession = session
 
@@ -840,39 +953,65 @@ final class AutoLockerStore: ObservableObject {
     }
 
     private func save() {
-        do {
-            try FileManager.default.createDirectory(
-                at: FileLocations.applicationSupportDirectory,
-                withIntermediateDirectories: true
-            )
-            let state = PersistedState(
-                guardEnabled: guardEnabled,
-                beacons: beacons,
-                rules: rules,
-                networkRules: networkRules,
-                advanced: advanced,
-                logs: logs,
-                activePause: activePause
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(state)
-            try data.write(to: FileLocations.stateFile, options: .atomic)
-        } catch {
-            unavailableReason = "保存本地状态失败：\(error.localizedDescription)"
+        let state = PersistedState(
+            guardEnabled: guardEnabled,
+            beacons: beacons,
+            rules: rules,
+            networkRules: networkRules,
+            advanced: advanced,
+            logs: logs,
+            activePause: activePause
+        )
+        let applicationSupportDirectory = FileLocations.applicationSupportDirectory
+        let stateFile = FileLocations.stateFile
+
+        saveQueue.async { [weak self] in
+            do {
+                try FileManager.default.createDirectory(
+                    at: applicationSupportDirectory,
+                    withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(state)
+                try data.write(to: stateFile, options: .atomic)
+            } catch {
+                DispatchQueue.main.async {
+                    self?.unavailableReason = "保存本地状态失败：\(error.localizedDescription)"
+                }
+            }
         }
     }
 
     @objc private func handleSessionBecameActive() {
         if activePause?.mode == .nextUnlock {
             resumeGuard(reason: "检测到用户解锁，自动恢复守护")
-            return
         }
 
         if guardEnabled {
-            refreshAvailability(reason: "用户解锁后恢复守护检查")
+            recoverGuardScanningAfterSystemInterruption(reason: "用户解锁后恢复蓝牙扫描")
         }
+    }
+
+    @objc private func handleSessionBecameInactive() {
+        guard guardEnabled else {
+            return
+        }
+
+        guardScanGraceUntil = .distantFuture
+        resetAbsenceCounters()
+        if status == .prompting {
+            promptTimer?.invalidate()
+            promptPresenter.close()
+            promptReason = ""
+            countdownRemaining = 0
+            status = .guarding
+        }
+    }
+
+    @objc private func handleSystemDidWake() {
+        recoverGuardScanningAfterSystemInterruption(reason: "系统唤醒后恢复蓝牙扫描")
     }
 
     private func normalized(_ value: String?) -> String? {

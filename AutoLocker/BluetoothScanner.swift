@@ -17,6 +17,10 @@ final class BluetoothScanner: NSObject, ObservableObject {
     private var shouldScanWhenReady = false
     private var pendingScanDuration: TimeInterval?
     private var scanTimer: Timer?
+    private var devicesChangeNotifyTimer: Timer?
+    private var pendingDevicesChangeNotify = false
+    private var lastDevicesChangeNotifyAt = Date.distantPast
+    private let devicesChangeNotifyInterval: TimeInterval = 0.25
 
     override init() {
         super.init()
@@ -25,6 +29,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
 
     deinit {
         scanTimer?.invalidate()
+        devicesChangeNotifyTimer?.invalidate()
     }
 
     var scanStatusText: String {
@@ -44,12 +49,34 @@ final class BluetoothScanner: NSObject, ObservableObject {
             return
         }
         if !isScanning {
+            compactLikelyDuplicateDevices()
             central.scanForPeripherals(
                 withServices: nil,
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
             isScanning = true
         }
+        configureScanTimer(duration: duration)
+        lastError = nil
+    }
+
+    func restartScanning(duration: TimeInterval? = nil) {
+        shouldScanWhenReady = true
+        pendingScanDuration = duration
+        guard powerState == .poweredOn else {
+            return
+        }
+
+        if isScanning {
+            central.stopScan()
+            isScanning = false
+        }
+        compactLikelyDuplicateDevices()
+        central.scanForPeripherals(
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
+        isScanning = true
         configureScanTimer(duration: duration)
         lastError = nil
     }
@@ -61,22 +88,25 @@ final class BluetoothScanner: NSObject, ObservableObject {
         scanTimer = nil
         scanEndsAt = nil
         scanRemainingSeconds = 0
-        guard isScanning else {
-            return
+        let shouldFlushDeviceUpdate = isScanning || pendingDevicesChangeNotify
+        if isScanning {
+            central.stopScan()
+            isScanning = false
         }
-        central.stopScan()
-        isScanning = false
+        if shouldFlushDeviceUpdate {
+            notifyDevicesChanged(throttled: false)
+        }
     }
 
     func forgetDevices(olderThan interval: TimeInterval) {
         let cutoff = Date().addingTimeInterval(-interval)
         devices.removeAll { $0.lastSeen < cutoff }
-        onDevicesChanged?()
+        notifyDevicesChanged(throttled: false)
     }
 
     func clearDevices() {
         devices.removeAll()
-        onDevicesChanged?()
+        notifyDevicesChanged(throttled: false)
     }
 }
 
@@ -109,6 +139,65 @@ private extension BluetoothScanner {
         if remaining <= 0 {
             stopScanning()
         }
+    }
+
+    func notifyDevicesChanged(throttled: Bool) {
+        guard throttled else {
+            devicesChangeNotifyTimer?.invalidate()
+            devicesChangeNotifyTimer = nil
+            pendingDevicesChangeNotify = false
+            lastDevicesChangeNotifyAt = Date()
+            onDevicesChanged?()
+            return
+        }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastDevicesChangeNotifyAt)
+        guard elapsed < devicesChangeNotifyInterval else {
+            devicesChangeNotifyTimer?.invalidate()
+            devicesChangeNotifyTimer = nil
+            pendingDevicesChangeNotify = false
+            lastDevicesChangeNotifyAt = now
+            onDevicesChanged?()
+            return
+        }
+
+        guard !pendingDevicesChangeNotify else {
+            return
+        }
+
+        pendingDevicesChangeNotify = true
+        devicesChangeNotifyTimer = Timer.scheduledTimer(withTimeInterval: devicesChangeNotifyInterval - elapsed, repeats: false) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.devicesChangeNotifyTimer = nil
+            self.pendingDevicesChangeNotify = false
+            self.lastDevicesChangeNotifyAt = Date()
+            self.onDevicesChanged?()
+        }
+    }
+
+    func compactLikelyDuplicateDevices() {
+        guard devices.count > 1 else {
+            return
+        }
+
+        var compacted: [DiscoveredDevice] = []
+        for device in devices {
+            if let index = compacted.firstIndex(where: { $0.isLikelySameAdvertisement(as: device) }) {
+                compacted[index] = compacted[index].mergingAdvertisementUpdate(device)
+            } else {
+                compacted.append(device)
+            }
+        }
+
+        guard compacted.count != devices.count else {
+            return
+        }
+
+        devices = compacted
+        notifyDevicesChanged(throttled: false)
     }
 }
 
@@ -151,6 +240,12 @@ extension BluetoothScanner: CBCentralManagerDelegate {
         let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
         let displayName = peripheral.name ?? localName ?? ""
         let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
+        let serviceUUIDs = uuidStrings(from: advertisementData[CBAdvertisementDataServiceUUIDsKey])
+        let solicitedServiceUUIDs = uuidStrings(from: advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey])
+        let overflowServiceUUIDs = uuidStrings(from: advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey])
+        let serviceDataHex = serviceDataHex(from: advertisementData[CBAdvertisementDataServiceDataKey])
+        let txPowerLevel = intValue(from: advertisementData[CBAdvertisementDataTxPowerLevelKey])
+        let isConnectable = boolValue(from: advertisementData[CBAdvertisementDataIsConnectable])
         let now = Date()
 
         let discovered = DiscoveredDevice(
@@ -160,16 +255,63 @@ extension BluetoothScanner: CBCentralManagerDelegate {
             localName: localName,
             manufacturerDataHex: manufacturerData?.hexString,
             manufacturerCompanyID: manufacturerData?.manufacturerCompanyID,
+            serviceUUIDs: serviceUUIDs,
+            solicitedServiceUUIDs: solicitedServiceUUIDs,
+            overflowServiceUUIDs: overflowServiceUUIDs,
+            serviceDataHex: serviceDataHex,
+            txPowerLevel: txPowerLevel,
+            isConnectable: isConnectable,
+            advertisementKeys: advertisementData.keys.sorted(),
             rssi: RSSI.intValue,
             lastSeen: now
         )
 
-        if let index = devices.firstIndex(where: { $0.id == discovered.id }) {
-            devices[index] = discovered
+        if let index = devices.firstIndex(where: { $0.id == discovered.id || $0.isLikelySameAdvertisement(as: discovered) }) {
+            let merged = devices[index].mergingAdvertisementUpdate(discovered)
+            devices[index] = merged
+            devices.removeAll { $0.id != merged.id && $0.isLikelySameAdvertisement(as: merged) }
         } else {
             devices.append(discovered)
         }
-        onDevicesChanged?()
+        notifyDevicesChanged(throttled: true)
+    }
+}
+
+private extension BluetoothScanner {
+    func uuidStrings(from value: Any?) -> [String] {
+        guard let uuids = value as? [CBUUID] else {
+            return []
+        }
+        return uuids.map(\.uuidString).sorted()
+    }
+
+    func serviceDataHex(from value: Any?) -> [String: String] {
+        guard let serviceData = value as? [CBUUID: Data] else {
+            return [:]
+        }
+
+        var result: [String: String] = [:]
+        for (uuid, data) in serviceData {
+            result[uuid.uuidString] = data.hexString
+        }
+        return result
+    }
+
+    func intValue(from value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return value as? Int
+    }
+
+    func boolValue(from value: Any?) -> Bool? {
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let number = value as? NSNumber {
+            return number.boolValue
+        }
+        return nil
     }
 }
 
