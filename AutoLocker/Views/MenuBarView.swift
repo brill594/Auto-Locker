@@ -30,8 +30,7 @@ struct MenuBarView: View {
                 Button("离开当前 Wi-Fi 后恢复") { store.pause(.wifiLeaves) }
                 Button("今天结束前") { store.pause(.endOfDay) }
                 Button("自定义时间点...") {
-                    store.selectedSection = .overview
-                    openMainWindow()
+                    openMainWindow(section: .overview)
                 }
             }
             .disabled(!store.guardEnabled)
@@ -57,12 +56,11 @@ struct MenuBarView: View {
             Divider()
 
             Button("打开主窗口") {
-                openMainWindow()
+                openMainWindow(section: .overview)
             }
 
             Button("打开日志") {
-                store.selectedSection = .logs
-                openMainWindow()
+                openMainWindow(section: .logs)
             }
 
             Divider()
@@ -73,8 +71,15 @@ struct MenuBarView: View {
         }
     }
 
-    private func openMainWindow() {
-        openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+    private func openMainWindow(section: AppSection) {
+        store.selectedSection = section
+
+        switch AutoLockerProcessContext.currentMode {
+        case .foregroundApp:
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        case .backgroundAgent:
+            AppLauncher.openMainApp(section: section)
+        }
     }
 }

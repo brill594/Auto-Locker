@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		000000000000000000000011 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000010 /* Assets.xcassets */; };
 		000000000000000000000200 /* AutoLockerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000100 /* AutoLockerApp.swift */; };
 		000000000000000000000201 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000101 /* AppState.swift */; };
 		000000000000000000000202 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000102 /* Models.swift */; };
 		000000000000000000000203 /* BluetoothScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* BluetoothScanner.swift */; };
 		000000000000000000000204 /* SystemIntegrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000104 /* SystemIntegrations.swift */; };
 		000000000000000000000205 /* PromptPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000105 /* PromptPresenter.swift */; };
-		00000000000000000000020E /* ManufacturerDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010E /* ManufacturerDirectory.swift */; };
 		000000000000000000000206 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000106 /* ContentView.swift */; };
 		000000000000000000000207 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000107 /* OverviewView.swift */; };
 		000000000000000000000208 /* BeaconsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000108 /* BeaconsView.swift */; };
@@ -22,8 +22,43 @@
 		00000000000000000000020B /* LogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010B /* LogView.swift */; };
 		00000000000000000000020C /* AdvancedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010C /* AdvancedView.swift */; };
 		00000000000000000000020D /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010D /* MenuBarView.swift */; };
-		000000000000000000000011 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000010 /* Assets.xcassets */; };
+		00000000000000000000020E /* ManufacturerDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010E /* ManufacturerDirectory.swift */; };
+		2B922F08D39545B5835DAE47 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000010 /* Assets.xcassets */; };
+		41F08AF417B9ACC7F9D57E3F /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB300097F05B94739344092D /* Cocoa.framework */; };
+		4ADCD1FF5A6DA992AE9AB9D4 /* AutoLockerAgent.app in Embed Login Items */ = {isa = PBXBuildFile; fileRef = D637001B8F0C38601D1CE98E /* AutoLockerAgent.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		4F7B80DF054BADF8EE65E308 /* AutoLockerAgentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C14A1CBDAE4BFC2EDE447A6 /* AutoLockerAgentApp.swift */; };
+		634C13BEFB750260522213B3 /* SystemIntegrations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000104 /* SystemIntegrations.swift */; };
+		71386AA161FBECA0B9A8190B /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010D /* MenuBarView.swift */; };
+		BFB3B94A3DD5810305F74BBB /* PromptPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000105 /* PromptPresenter.swift */; };
+		CFC9F039D22699DEB7AFC909 /* ManufacturerDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000010E /* ManufacturerDirectory.swift */; };
+		D9594DE4D75E866961F12229 /* BluetoothScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000103 /* BluetoothScanner.swift */; };
+		E19293C6B7364AA99F04611C /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000102 /* Models.swift */; };
+		FC0692D81753181E12D557BA /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000101 /* AppState.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D361586856B58176E73ADA99 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A90DD948BD48086F8F790B3B;
+			remoteInfo = AutoLockerAgent;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		BBB616116BC7806B03DA59E2 /* Embed Login Items */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/LoginItems;
+			dstSubfolderSpec = 1;
+			files = (
+				4ADCD1FF5A6DA992AE9AB9D4 /* AutoLockerAgent.app in Embed Login Items */,
+			);
+			name = "Embed Login Items";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000005 /* AutoLocker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AutoLocker.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -35,7 +70,6 @@
 		000000000000000000000103 /* BluetoothScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BluetoothScanner.swift; sourceTree = "<group>"; };
 		000000000000000000000104 /* SystemIntegrations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemIntegrations.swift; sourceTree = "<group>"; };
 		000000000000000000000105 /* PromptPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptPresenter.swift; sourceTree = "<group>"; };
-		00000000000000000000010E /* ManufacturerDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManufacturerDirectory.swift; sourceTree = "<group>"; };
 		000000000000000000000106 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		000000000000000000000107 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		000000000000000000000108 /* BeaconsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeaconsView.swift; sourceTree = "<group>"; };
@@ -44,6 +78,11 @@
 		00000000000000000000010B /* LogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogView.swift; sourceTree = "<group>"; };
 		00000000000000000000010C /* AdvancedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedView.swift; sourceTree = "<group>"; };
 		00000000000000000000010D /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		00000000000000000000010E /* ManufacturerDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManufacturerDirectory.swift; sourceTree = "<group>"; };
+		04CE6B9CC65A9711BFA2A281 /* AgentInfo.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = AgentInfo.plist; sourceTree = "<group>"; };
+		3C14A1CBDAE4BFC2EDE447A6 /* AutoLockerAgentApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AutoLockerAgentApp.swift; sourceTree = "<group>"; };
+		BB300097F05B94739344092D /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		D637001B8F0C38601D1CE98E /* AutoLockerAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = AutoLockerAgent.app; path = AutoLockerAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +90,14 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0E97867FD0D735CCCED82963 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				41F08AF417B9ACC7F9D57E3F /* Cocoa.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -62,6 +109,7 @@
 			children = (
 				000000000000000000000012 /* AutoLocker */,
 				000000000000000000000003 /* Products */,
+				5D2B8EAB54A34FFCE53614E7 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -69,6 +117,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000005 /* AutoLocker.app */,
+				D637001B8F0C38601D1CE98E /* AutoLockerAgent.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -86,6 +135,8 @@
 				000000000000000000000105 /* PromptPresenter.swift */,
 				00000000000000000000010E /* ManufacturerDirectory.swift */,
 				000000000000000000000013 /* Views */,
+				04CE6B9CC65A9711BFA2A281 /* AgentInfo.plist */,
+				3C14A1CBDAE4BFC2EDE447A6 /* AutoLockerAgentApp.swift */,
 			);
 			path = AutoLocker;
 			sourceTree = "<group>";
@@ -105,6 +156,22 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
+		57FAB366A2B89C99A3B41E27 /* OS X */ = {
+			isa = PBXGroup;
+			children = (
+				BB300097F05B94739344092D /* Cocoa.framework */,
+			);
+			name = "OS X";
+			sourceTree = "<group>";
+		};
+		5D2B8EAB54A34FFCE53614E7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				57FAB366A2B89C99A3B41E27 /* OS X */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -115,14 +182,33 @@
 				000000000000000000000006 /* Sources */,
 				000000000000000000000008 /* Frameworks */,
 				000000000000000000000007 /* Resources */,
+				BBB616116BC7806B03DA59E2 /* Embed Login Items */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E66C1DE905F77C141DAF9B50 /* PBXTargetDependency */,
+			);
+			name = AutoLocker;
+			productName = AutoLocker;
+			productReference = 000000000000000000000005 /* AutoLocker.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A90DD948BD48086F8F790B3B /* AutoLockerAgent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 148E4A7F1DF8FC56AF454A6E /* Build configuration list for PBXNativeTarget "AutoLockerAgent" */;
+			buildPhases = (
+				9573BBA2A5B5C93FA541D889 /* Sources */,
+				0E97867FD0D735CCCED82963 /* Frameworks */,
+				B850377F3F03447FE7935634 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
-			name = AutoLocker;
-			productName = AutoLocker;
-			productReference = 000000000000000000000005 /* AutoLocker.app */;
+			name = AutoLockerAgent;
+			productName = AutoLockerAgent;
+			productReference = D637001B8F0C38601D1CE98E /* AutoLockerAgent.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -154,6 +240,7 @@
 			projectRoot = "";
 			targets = (
 				000000000000000000000004 /* AutoLocker */,
+				A90DD948BD48086F8F790B3B /* AutoLockerAgent */,
 			);
 		};
 /* End PBXProject section */
@@ -164,6 +251,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000011 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B850377F3F03447FE7935634 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2B922F08D39545B5835DAE47 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -192,7 +287,31 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		9573BBA2A5B5C93FA541D889 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4F7B80DF054BADF8EE65E308 /* AutoLockerAgentApp.swift in Sources */,
+				FC0692D81753181E12D557BA /* AppState.swift in Sources */,
+				E19293C6B7364AA99F04611C /* Models.swift in Sources */,
+				D9594DE4D75E866961F12229 /* BluetoothScanner.swift in Sources */,
+				634C13BEFB750260522213B3 /* SystemIntegrations.swift in Sources */,
+				BFB3B94A3DD5810305F74BBB /* PromptPresenter.swift in Sources */,
+				CFC9F039D22699DEB7AFC909 /* ManufacturerDirectory.swift in Sources */,
+				71386AA161FBECA0B9A8190B /* MenuBarView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E66C1DE905F77C141DAF9B50 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = AutoLockerAgent;
+			target = A90DD948BD48086F8F790B3B /* AutoLockerAgent */;
+			targetProxy = D361586856B58176E73ADA99 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		00000000000000000000000A /* Debug */ = {
@@ -356,6 +475,58 @@
 			};
 			name = Release;
 		};
+		AF0902B9A35710D2C3DA766D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AutoLocker/AgentInfo.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.brilliant.AutoLocker.Agent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) BACKGROUND_AGENT";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C258D5B2C14C18F772F98EB5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AutoLocker/AgentInfo.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.brilliant.AutoLocker.Agent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) BACKGROUND_AGENT";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -373,6 +544,15 @@
 			buildConfigurations = (
 				00000000000000000000000D /* Debug */,
 				00000000000000000000000E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		148E4A7F1DF8FC56AF454A6E /* Build configuration list for PBXNativeTarget "AutoLockerAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AF0902B9A35710D2C3DA766D /* Release */,
+				C258D5B2C14C18F772F98EB5 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
