@@ -5,6 +5,7 @@ import UserNotifications
 
 final class WiFiMonitor: ObservableObject {
     @Published private(set) var currentSSID: String?
+    @Published private(set) var currentBSSID: String?
 
     private var timer: Timer?
 
@@ -22,7 +23,13 @@ final class WiFiMonitor: ObservableObject {
     }
 
     func refresh() {
-        currentSSID = CWWiFiClient.shared().interface()?.ssid()
+        let interfaces = CWWiFiClient.shared().interfaces() ?? []
+        let activeInterface = interfaces.first {
+            ($0.ssid() ?? "").isEmpty == false || ($0.bssid() ?? "").isEmpty == false
+        }
+
+        currentSSID = activeInterface?.ssid()
+        currentBSSID = activeInterface?.bssid()
     }
 }
 

@@ -6,6 +6,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
     @Published private(set) var devices: [DiscoveredDevice] = []
     @Published private(set) var powerState: BluetoothPowerState = .unknown
     @Published private(set) var isScanning = false
+    @Published private(set) var scanStartedAt: Date?
     @Published private(set) var scanEndsAt: Date?
     @Published private(set) var scanRemainingSeconds = 0
     @Published private(set) var lastError: String?
@@ -55,6 +56,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
             isScanning = true
+            scanStartedAt = Date()
         }
         configureScanTimer(duration: duration)
         lastError = nil
@@ -77,6 +79,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         isScanning = true
+        scanStartedAt = Date()
         configureScanTimer(duration: duration)
         lastError = nil
     }
@@ -86,6 +89,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
         pendingScanDuration = nil
         scanTimer?.invalidate()
         scanTimer = nil
+        scanStartedAt = nil
         scanEndsAt = nil
         scanRemainingSeconds = 0
         let shouldFlushDeviceUpdate = isScanning || pendingDevicesChangeNotify

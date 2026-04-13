@@ -32,6 +32,7 @@ final class AutoLockerStore: ObservableObject {
     private var missingStartedAt: Date?
     private var consecutiveMisses = 0
     private var guardScanGraceUntil: Date?
+    private var guardScanGraceResetsAbsence = true
     private var recoveredScanForCurrentAbsence = false
     private var networkSuppressionSSID: String?
     private var lastUnavailableLogReason: String?
@@ -61,6 +62,26 @@ final class AutoLockerStore: ObservableObject {
 
     var currentSSID: String? {
         wifiMonitor.currentSSID
+    }
+
+    var currentBSSID: String? {
+        wifiMonitor.currentBSSID
+    }
+
+    var currentWiFiDisplay: String? {
+        let ssid = currentSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bssid = currentBSSID?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch (ssid?.isEmpty == false ? ssid : nil, bssid?.isEmpty == false ? bssid : nil) {
+        case let (ssid?, bssid?):
+            return "\(ssid) · \(bssid)"
+        case let (ssid?, nil):
+            return ssid
+        case let (nil, bssid?):
+            return bssid
+        default:
+            return nil
+        }
     }
 
     var timerRemainingSeconds: Int? {
@@ -193,7 +214,7 @@ final class AutoLockerStore: ObservableObject {
 
         promptTimer?.invalidate()
         promptPresenter.close()
-        activePause = ActivePause(mode: mode, startedAt: now, until: until, wifiSSID: currentSSID)
+        activePause = ActivePause(mode: mode, startedAt: now, until: until, wifiSSID: currentSSID ?? currentBSSID)
         status = .paused
         resetAbsenceCounters()
         addLog(.pause, reason: activePause?.label ?? mode.label)
@@ -356,6 +377,201 @@ final class AutoLockerStore: ObservableObject {
         return "\(count)/\(beacons.count) 个信标在场"
     }
 
+    func runtimeStatus(for beacon: Beacon) -> BeaconRuntimeStatus {
+        let freshnessSeconds = Int(ceil(guardPresenceFreshnessSeconds))
+        guard !beacon.selectedFields.isEmpty else {
+            return BeaconRuntimeStatus(
+                state: .notConfigured,
+                ageSeconds: nil,
+                rssi: nil,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: nil
+            )
+        }
+
+        let now = Date()
+        let device = scanner.devices.first(where: { deviceMatches($0, beacon: beacon) })
+        let relatedMatch = device == nil ? closestRelatedDevice(for: beacon) : nil
+        let statusDevice = device ?? relatedMatch?.device
+        let age = runtimeAge(now: now, device: statusDevice, beacon: beacon)
+        let rssi = statusDevice?.rssi ?? beacon.lastRSSI
+        let scanHasSettled = scanner.scanStartedAt.map {
+            now.timeIntervalSince($0) >= guardPresenceFreshnessSeconds
+        } ?? false
+
+        guard scanner.powerState == .poweredOn else {
+            return BeaconRuntimeStatus(
+                state: .bluetoothUnavailable,
+                ageSeconds: age,
+                rssi: rssi,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: nil
+            )
+        }
+
+        guard scanner.isScanning else {
+            return BeaconRuntimeStatus(
+                state: .scanPaused,
+                ageSeconds: age,
+                rssi: rssi,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: nil
+            )
+        }
+
+        guard let device else {
+            if let relatedMatch, scanHasSettled {
+                return BeaconRuntimeStatus(
+                    state: .fieldMismatch,
+                    ageSeconds: age,
+                    rssi: rssi,
+                    freshnessSeconds: freshnessSeconds,
+                    rssiThreshold: nil,
+                    mismatchedFields: relatedMatch.report.problemFields.map(\.label)
+                )
+            }
+            return BeaconRuntimeStatus(
+                state: scanHasSettled ? .notDetected : .scanning,
+                ageSeconds: age,
+                rssi: rssi,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: nil
+            )
+        }
+
+        let isFresh = now.timeIntervalSince(device.lastSeen) <= guardPresenceFreshnessSeconds
+        guard isFresh else {
+            return BeaconRuntimeStatus(
+                state: scanHasSettled ? .stale : .scanning,
+                ageSeconds: age,
+                rssi: device.rssi,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: nil
+            )
+        }
+
+        if rules.detectionMode == .rssiThreshold, device.rssi < rules.rssiThreshold {
+            return BeaconRuntimeStatus(
+                state: .weakSignal,
+                ageSeconds: age,
+                rssi: device.rssi,
+                freshnessSeconds: freshnessSeconds,
+                rssiThreshold: rules.rssiThreshold
+            )
+        }
+
+        return BeaconRuntimeStatus(
+            state: .present,
+            ageSeconds: age,
+            rssi: device.rssi,
+            freshnessSeconds: freshnessSeconds,
+            rssiThreshold: rules.detectionMode == .rssiThreshold ? rules.rssiThreshold : nil
+        )
+    }
+
+    private func runtimeAge(now: Date, device: DiscoveredDevice?, beacon: Beacon) -> Int? {
+        let lastSeen = device?.lastSeen ?? beacon.lastSeen
+        return lastSeen.map { max(0, Int(now.timeIntervalSince($0))) }
+    }
+
+    private func matchReport(for device: DiscoveredDevice, beacon: Beacon) -> BeaconMatchReport {
+        guard !beacon.selectedFields.isEmpty else {
+            return BeaconMatchReport()
+        }
+
+        var matched = 0
+        var missing = 0
+        var problemFields: [MatchField] = []
+
+        for field in beacon.selectedFields {
+            switch field {
+            case .name:
+                guard let expected = normalized(beacon.expectedName), !expected.isEmpty else {
+                    missing += 1
+                    continue
+                }
+                guard let actual = normalized(device.displayName), !actual.isEmpty else {
+                    missing += 1
+                    problemFields.append(field)
+                    continue
+                }
+                if actual == expected {
+                    matched += 1
+                } else {
+                    problemFields.append(field)
+                }
+            case .identifier:
+                guard let expected = normalized(beacon.expectedIdentifier), !expected.isEmpty else {
+                    missing += 1
+                    continue
+                }
+                guard let actual = normalized(device.identifier), !actual.isEmpty else {
+                    missing += 1
+                    problemFields.append(field)
+                    continue
+                }
+                if actual == expected {
+                    matched += 1
+                } else {
+                    problemFields.append(field)
+                }
+            case .manufacturerData:
+                guard let expected = normalized(beacon.expectedManufacturerDataHex), !expected.isEmpty else {
+                    missing += 1
+                    continue
+                }
+                guard let actual = normalized(device.manufacturerDataHex), !actual.isEmpty else {
+                    missing += 1
+                    problemFields.append(field)
+                    continue
+                }
+                if actual == expected {
+                    matched += 1
+                } else {
+                    problemFields.append(field)
+                }
+            }
+        }
+
+        return BeaconMatchReport(matchedCount: matched, missingCount: missing, problemFields: problemFields)
+    }
+
+    private func closestRelatedDevice(for beacon: Beacon) -> (device: DiscoveredDevice, report: BeaconMatchReport)? {
+        let candidates = scanner.devices.compactMap { device -> (DiscoveredDevice, BeaconMatchReport, Int)? in
+            let score = relatedDeviceScore(for: device, beacon: beacon)
+            guard score > 0 else {
+                return nil
+            }
+            return (device, matchReport(for: device, beacon: beacon), score)
+        }
+
+        let best = candidates.sorted { lhs, rhs in
+            if lhs.2 != rhs.2 {
+                return lhs.2 > rhs.2
+            }
+            if lhs.1.matchedCount != rhs.1.matchedCount {
+                return lhs.1.matchedCount > rhs.1.matchedCount
+            }
+            if lhs.1.problemFields.count != rhs.1.problemFields.count {
+                return lhs.1.problemFields.count < rhs.1.problemFields.count
+            }
+            return lhs.0.lastSeen > rhs.0.lastSeen
+        }.first
+
+        return best.map { ($0.0, $0.1) }
+    }
+
+    private func relatedDeviceScore(for device: DiscoveredDevice, beacon: Beacon) -> Int {
+        var score = 0
+        if normalized(device.identifier) == normalized(beacon.expectedIdentifier) {
+            score += 4
+        }
+        if normalized(device.displayName) == normalized(beacon.expectedName) {
+            score += 2
+        }
+        return score
+    }
+
     private func configureCallbacks() {
         scanner.onDevicesChanged = { [weak self] in
             guard let self else {
@@ -489,6 +705,15 @@ final class AutoLockerStore: ObservableObject {
         max(15, Double(rules.delaySeconds), min(Double(advanced.lowFrequencyScanIntervalSeconds), 60))
     }
 
+    private var guardPresenceFreshnessSeconds: TimeInterval {
+        let delay = max(1, Double(rules.delaySeconds))
+        return max(5, min(delay / 2, 10))
+    }
+
+    private var guardPreLockConfirmationSeconds: TimeInterval {
+        5
+    }
+
     private func guardScanGraceIsActive(now: Date) -> Bool {
         guard let guardScanGraceUntil else {
             return false
@@ -497,12 +722,15 @@ final class AutoLockerStore: ObservableObject {
             return true
         }
         self.guardScanGraceUntil = nil
+        guardScanGraceResetsAbsence = true
         return false
     }
 
     private func recoverGuardScanningAfterSystemInterruption(
         reason: String,
-        resetScanRecovery: Bool = true
+        resetScanRecovery: Bool = true,
+        graceSeconds: TimeInterval? = nil,
+        resetAbsenceDuringGrace: Bool = true
     ) {
         guard guardEnabled else {
             return
@@ -516,9 +744,12 @@ final class AutoLockerStore: ObservableObject {
             scanner.startScanning()
         }
 
-        let graceSeconds = guardScanRecoveryGraceSeconds
+        let graceSeconds = graceSeconds ?? guardScanRecoveryGraceSeconds
         guardScanGraceUntil = now.addingTimeInterval(graceSeconds)
-        resetAbsenceCounters(resetScanRecovery: resetScanRecovery)
+        guardScanGraceResetsAbsence = resetAbsenceDuringGrace
+        if resetAbsenceDuringGrace {
+            resetAbsenceCounters(resetScanRecovery: resetScanRecovery)
+        }
         status = activePause == nil ? .guarding : .paused
 
         if !alreadyInGrace {
@@ -557,7 +788,9 @@ final class AutoLockerStore: ObservableObject {
 
         let now = Date()
         if guardScanGraceIsActive(now: now) {
-            resetAbsenceCounters(resetScanRecovery: false)
+            if guardScanGraceResetsAbsence {
+                resetAbsenceCounters(resetScanRecovery: false)
+            }
             return
         }
 
@@ -595,7 +828,9 @@ final class AutoLockerStore: ObservableObject {
                 recoveredScanForCurrentAbsence = true
                 recoverGuardScanningAfterSystemInterruption(
                     reason: "离开判定前重启蓝牙扫描确认",
-                    resetScanRecovery: false
+                    resetScanRecovery: false,
+                    graceSeconds: guardPreLockConfirmationSeconds,
+                    resetAbsenceDuringGrace: false
                 )
                 return
             }
@@ -606,8 +841,8 @@ final class AutoLockerStore: ObservableObject {
     }
 
     private func applyBlacklistRuleIfNeeded() {
-        guard let ssid = normalized(currentSSID),
-              normalizedList(networkRules.blacklistSSIDs).contains(ssid),
+        let blacklist = normalizedList(networkRules.blacklistSSIDs)
+        guard let matchedNetwork = matchedCurrentNetwork(in: blacklist),
               networkRules.blacklistBehavior == .enableGuard,
               !guardEnabled,
               !beacons.isEmpty,
@@ -619,7 +854,7 @@ final class AutoLockerStore: ObservableObject {
         guardEnabled = true
         status = .guarding
         scanner.startScanning()
-        addLog(.network, reason: "命中 Wi-Fi 黑名单，自动启用守护：\(ssid)")
+        addLog(.network, reason: "命中 Wi-Fi 黑名单，自动启用守护：\(matchedNetwork)")
     }
 
     private func resolvePauseIfNeeded() -> Bool {
@@ -633,8 +868,8 @@ final class AutoLockerStore: ObservableObject {
             status = .paused
             return true
         case .wifiLeaves:
-            if let pausedSSID = pause.wifiSSID, currentSSID != pausedSSID {
-                resumeGuard(reason: "已离开暂停时的 Wi-Fi：\(pausedSSID)")
+            if let pausedNetwork = pause.wifiSSID, !currentNetworkKeys().contains(normalized(pausedNetwork) ?? "") {
+                resumeGuard(reason: "已离开暂停时的 Wi-Fi：\(pausedNetwork)")
                 return false
             }
             status = .paused
@@ -650,17 +885,8 @@ final class AutoLockerStore: ObservableObject {
     }
 
     private func shouldSuppressForNetwork() -> Bool {
-        guard let ssid = normalized(currentSSID) else {
-            if networkSuppressionSSID != nil {
-                networkSuppressionSSID = nil
-                status = .guarding
-                addLog(.network, reason: "离开白名单网络，恢复守护")
-            }
-            return false
-        }
-
         let whitelist = normalizedList(networkRules.whitelistSSIDs)
-        guard whitelist.contains(ssid) else {
+        guard let matchedNetwork = matchedCurrentNetwork(in: whitelist) else {
             if networkSuppressionSSID != nil {
                 networkSuppressionSSID = nil
                 status = .guarding
@@ -669,9 +895,9 @@ final class AutoLockerStore: ObservableObject {
             return false
         }
 
-        if networkSuppressionSSID != ssid {
-            networkSuppressionSSID = ssid
-            addLog(.network, reason: "命中 Wi-Fi 白名单，\(networkRules.whitelistBehavior.label)：\(ssid)")
+        if networkSuppressionSSID != matchedNetwork {
+            networkSuppressionSSID = matchedNetwork
+            addLog(.network, reason: "命中 Wi-Fi 白名单，\(networkRules.whitelistBehavior.label)：\(matchedNetwork)")
         }
 
         switch networkRules.whitelistBehavior {
@@ -735,7 +961,7 @@ final class AutoLockerStore: ObservableObject {
             beacons[index].manufacturerInfo = device.manufacturerDisplayName ?? device.manufacturerDataHex
         }
 
-        let freshness = max(Double(rules.delaySeconds), Double(advanced.lowFrequencyScanIntervalSeconds)) + 5
+        let freshness = guardPresenceFreshnessSeconds
         let isFresh = now.timeIntervalSince(device.lastSeen) <= freshness
         guard isFresh else {
             return (false, device)
@@ -750,59 +976,7 @@ final class AutoLockerStore: ObservableObject {
     }
 
     private func deviceMatches(_ device: DiscoveredDevice, beacon: Beacon) -> Bool {
-        guard !beacon.selectedFields.isEmpty else {
-            return false
-        }
-
-        var matched = 0
-        var missing = 0
-
-        for field in beacon.selectedFields {
-            switch field {
-            case .name:
-                guard let expected = normalized(beacon.expectedName), !expected.isEmpty else {
-                    missing += 1
-                    continue
-                }
-                let actual = normalized(device.displayName)
-                guard let actual, !actual.isEmpty else {
-                    missing += 1
-                    continue
-                }
-                if actual == expected {
-                    matched += 1
-                } else {
-                    return false
-                }
-            case .identifier:
-                guard let expected = normalized(beacon.expectedIdentifier), !expected.isEmpty else {
-                    missing += 1
-                    continue
-                }
-                let actual = normalized(device.identifier)
-                if actual == expected {
-                    matched += 1
-                } else {
-                    return false
-                }
-            case .manufacturerData:
-                guard let expected = normalized(beacon.expectedManufacturerDataHex), !expected.isEmpty else {
-                    missing += 1
-                    continue
-                }
-                guard let actual = normalized(device.manufacturerDataHex), !actual.isEmpty else {
-                    missing += 1
-                    continue
-                }
-                if actual == expected {
-                    matched += 1
-                } else {
-                    return false
-                }
-            }
-        }
-
-        return matched > 0 && missing <= beacon.missingTolerance
+        matchReport(for: device, beacon: beacon).matches(for: beacon)
     }
 
     private func resetAbsenceCounters(resetScanRecovery: Bool = true) {
@@ -886,9 +1060,9 @@ final class AutoLockerStore: ObservableObject {
                 )
             },
             networkSnapshot: NetworkSnapshot(
-                ssid: currentSSID,
-                whitelistHit: normalized(currentSSID).map { normalizedList(networkRules.whitelistSSIDs).contains($0) } ?? false,
-                blacklistHit: normalized(currentSSID).map { normalizedList(networkRules.blacklistSSIDs).contains($0) } ?? false
+                ssid: currentWiFiDisplay,
+                whitelistHit: matchedCurrentNetwork(in: normalizedList(networkRules.whitelistSSIDs)) != nil,
+                blacklistHit: matchedCurrentNetwork(in: normalizedList(networkRules.blacklistSSIDs)) != nil
             ),
             ruleSnapshot: GuardRuleSnapshot(
                 detectionMode: rules.detectionMode,
@@ -915,7 +1089,7 @@ final class AutoLockerStore: ObservableObject {
             decoder.dateDecodingStrategy = .iso8601
             let state = try decoder.decode(PersistedState.self, from: data)
             guardEnabled = state.guardEnabled
-            beacons = state.beacons
+            beacons = state.beacons.map(normalizeLoadedBeacon)
             rules = state.rules
             networkRules = state.networkRules
             advanced = state.advanced
@@ -1000,6 +1174,7 @@ final class AutoLockerStore: ObservableObject {
         }
 
         guardScanGraceUntil = .distantFuture
+        guardScanGraceResetsAbsence = true
         resetAbsenceCounters()
         if status == .prompting {
             promptTimer?.invalidate()
@@ -1027,5 +1202,45 @@ final class AutoLockerStore: ObservableObject {
 
     private func normalizedList(_ values: [String]) -> Set<String> {
         Set(values.compactMap { normalized($0) })
+    }
+
+    private func normalizeLoadedBeacon(_ beacon: Beacon) -> Beacon {
+        var beacon = beacon
+        let legacyDefaultFields: Set<MatchField> = [.identifier, .name, .manufacturerData]
+        if Set(beacon.selectedFields) == legacyDefaultFields {
+            beacon.selectedFields = Beacon.defaultSelectedFields(expectedName: beacon.expectedName ?? beacon.displayName)
+        }
+        return beacon
+    }
+
+    private func currentNetworkKeys() -> Set<String> {
+        var keys: Set<String> = []
+        if let ssid = normalized(currentSSID) {
+            keys.insert(ssid)
+        }
+        if let bssid = normalized(currentBSSID) {
+            keys.insert(bssid)
+        }
+        return keys
+    }
+
+    private func matchedCurrentNetwork(in configuredValues: Set<String>) -> String? {
+        if let ssid = normalized(currentSSID), configuredValues.contains(ssid) {
+            return currentSSID ?? currentBSSID
+        }
+        if let bssid = normalized(currentBSSID), configuredValues.contains(bssid) {
+            return currentBSSID ?? currentSSID
+        }
+        return nil
+    }
+}
+
+private struct BeaconMatchReport {
+    var matchedCount = 0
+    var missingCount = 0
+    var problemFields: [MatchField] = []
+
+    func matches(for beacon: Beacon) -> Bool {
+        problemFields.isEmpty && matchedCount > 0 && missingCount <= beacon.missingTolerance
     }
 }

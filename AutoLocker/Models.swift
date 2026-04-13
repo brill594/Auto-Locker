@@ -627,9 +627,7 @@ struct Beacon: Identifiable, Codable, Hashable {
         expectedManufacturerDataHex = device.manufacturerDataHex
         lastSeen = device.lastSeen
         lastRSSI = device.rssi
-        if device.manufacturerDataHex != nil {
-            selectedFields = [.identifier, .name, .manufacturerData]
-        }
+        selectedFields = Self.defaultSelectedFields(expectedName: device.displayName)
     }
 
     var manufacturerDisplayName: String? {
@@ -651,6 +649,105 @@ struct Beacon: Identifiable, Codable, Hashable {
             return "未选择识别字段"
         }
         return selectedFields.map(\.label).joined(separator: "、")
+    }
+
+    static func defaultSelectedFields(expectedName: String?) -> [MatchField] {
+        var fields: [MatchField] = [.identifier]
+        let trimmedName = expectedName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedName.isEmpty {
+            fields.append(.name)
+        }
+        return fields
+    }
+}
+
+enum BeaconRuntimeState: Equatable {
+    case present
+    case weakSignal
+    case scanning
+    case scanPaused
+    case fieldMismatch
+    case stale
+    case notDetected
+    case notConfigured
+    case bluetoothUnavailable
+}
+
+struct BeaconRuntimeStatus: Equatable {
+    var state: BeaconRuntimeState
+    var ageSeconds: Int?
+    var rssi: Int?
+    var freshnessSeconds: Int
+    var rssiThreshold: Int?
+    var mismatchedFields: [String] = []
+
+    var label: String {
+        switch state {
+        case .present: return "在线"
+        case .weakSignal: return "信号过低"
+        case .scanning: return "等待广播"
+        case .scanPaused: return "扫描暂停"
+        case .fieldMismatch: return "字段不匹配"
+        case .stale: return "疑似离线"
+        case .notDetected: return "未检测到"
+        case .notConfigured: return "未配置"
+        case .bluetoothUnavailable: return "蓝牙不可用"
+        }
+    }
+
+    var detail: String {
+        switch state {
+        case .present:
+            return [ageText, rssiText].compactMap { $0 }.joined(separator: "，")
+        case .weakSignal:
+            let threshold = rssiThreshold.map { "阈值 \($0) dBm" } ?? "低于阈值"
+            return [ageText, rssiText, threshold].compactMap { $0 }.joined(separator: "，")
+        case .scanning:
+            return [ageText, rssiText, "等待下一次广播"].compactMap { $0 }.joined(separator: "，")
+        case .scanPaused:
+            let hint = ageSeconds == nil ? "点击扫描后刷新状态" : "点击扫描可继续刷新"
+            return [ageText, rssiText, hint].compactMap { $0 }.joined(separator: "，")
+        case .fieldMismatch:
+            let detail = mismatchedFields.isEmpty ? "已发现设备，但勾选字段未全部匹配" : "不一致字段：\(mismatchedFields.joined(separator: "、"))"
+            return [ageText, rssiText, detail].compactMap { $0 }.joined(separator: "，")
+        case .stale:
+            let window = "超过 \(freshnessSeconds) 秒有效窗口"
+            return [ageText, window].compactMap { $0 }.joined(separator: "，")
+        case .notDetected:
+            return "扫描中暂未发现匹配设备"
+        case .notConfigured:
+            return "未选择识别字段，守护不会计入在场"
+        case .bluetoothUnavailable:
+            return [ageText, rssiText, "蓝牙未处于可用状态"].compactMap { $0 }.joined(separator: "，")
+        }
+    }
+
+    var systemImage: String {
+        switch state {
+        case .present: return "checkmark.circle.fill"
+        case .weakSignal: return "antenna.radiowaves.left.and.right.slash"
+        case .scanning: return "dot.radiowaves.left.and.right"
+        case .scanPaused: return "pause.circle"
+        case .fieldMismatch: return "slider.horizontal.3"
+        case .stale: return "clock.badge.exclamationmark"
+        case .notDetected: return "questionmark.circle"
+        case .notConfigured: return "exclamationmark.triangle"
+        case .bluetoothUnavailable: return "bolt.horizontal.circle"
+        }
+    }
+
+    private var ageText: String? {
+        guard let ageSeconds else {
+            return nil
+        }
+        if ageSeconds <= 0 {
+            return "刚刚出现"
+        }
+        return "最后出现 \(ageSeconds) 秒前"
+    }
+
+    private var rssiText: String? {
+        rssi.map { "RSSI \($0) dBm" }
     }
 }
 

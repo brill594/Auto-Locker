@@ -29,8 +29,10 @@ struct ContentView: View {
             }
             .environmentObject(store)
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
+                ToolbarItem(placement: .navigation) {
                     StatusPill(state: store.status)
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Toggle("守护", isOn: Binding(
                         get: { store.guardEnabled },
                         set: { store.setGuardEnabled($0) }
@@ -94,6 +96,41 @@ struct InfoLine: View {
                 .fontWeight(.medium)
                 .multilineTextAlignment(.trailing)
         }
+    }
+}
+
+struct NumberInputRow: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+    var suffix: String = ""
+    var fieldWidth: CGFloat = 80
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+            Spacer(minLength: 16)
+            TextField("", value: clampedValue, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: fieldWidth)
+            if !suffix.isEmpty {
+                Text(suffix)
+                    .foregroundStyle(.secondary)
+            }
+            Stepper("", value: clampedValue, in: range, step: step)
+                .labelsHidden()
+        }
+    }
+
+    private var clampedValue: Binding<Int> {
+        Binding(
+            get: { value },
+            set: { newValue in
+                value = min(max(range.lowerBound, newValue), range.upperBound)
+            }
+        )
     }
 }
 

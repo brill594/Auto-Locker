@@ -36,7 +36,7 @@ struct AdvancedView: View {
                             in: 30...600,
                             step: 10
                         )
-                        Text("CoreBluetooth 扫描由系统调度；手动扫描时长用于信标页发现设备，其他周期用于过期判断和后续低频策略扩展。")
+                        Text("CoreBluetooth 扫描由系统调度；手动扫描时长用于信标页发现设备，低频扫描周期仅作为解锁/唤醒后的恢复保护参考，不会拉长实时离开判定。")
                             .foregroundStyle(.secondary)
                     }
                     .padding(4)

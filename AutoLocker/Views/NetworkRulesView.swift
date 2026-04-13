@@ -13,9 +13,15 @@ struct NetworkRulesView: View {
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
-                        InfoLine(title: "当前 Wi-Fi", value: store.currentSSID ?? "未连接或不可读")
-                        Text("网络名大小写不敏感。多个 Wi-Fi 请用逗号分隔。")
-                            .foregroundStyle(.secondary)
+                        InfoLine(title: "当前 Wi-Fi", value: store.currentWiFiDisplay ?? "未连接或不可读")
+                        if let bssid = store.currentBSSID, let ssid = store.currentSSID {
+                            InfoLine(title: "当前 BSSID", value: bssid)
+                            Text("规则默认按 SSID 匹配；BSSID 仅作为补充信息和兜底读取。多个 Wi-Fi 请用逗号分隔。")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("规则默认按 SSID 匹配；多个 Wi-Fi 请用逗号分隔。")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(4)
                 } label: {

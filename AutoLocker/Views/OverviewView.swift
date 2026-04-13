@@ -27,7 +27,7 @@ struct OverviewView: View {
 
                             InfoLine(title: "信标", value: store.currentPresenceSummary())
                             InfoLine(title: "蓝牙", value: store.scanner.powerState.label)
-                            InfoLine(title: "当前 Wi-Fi", value: store.currentSSID ?? "未连接或不可读")
+                            InfoLine(title: "当前 Wi-Fi", value: store.currentWiFiDisplay ?? "未连接或不可读")
                             InfoLine(title: "规则", value: store.rules.summary)
 
                             if let reason = store.unavailableReason, store.status == .unavailable {
@@ -87,10 +87,12 @@ struct OverviewView: View {
                             .foregroundStyle(.secondary)
 
                         HStack {
-                            Stepper(
-                                "倒计时 \(store.timerLockDurationMinutes) 分钟",
+                            NumberInputRow(
+                                title: "倒计时",
                                 value: $store.timerLockDurationMinutes,
-                                in: 1...240
+                                range: 1...1440,
+                                suffix: "分钟",
+                                fieldWidth: 96
                             )
 
                             Spacer()

@@ -5,6 +5,7 @@ struct BeaconsView: View {
     @State private var searchText = ""
     @State private var sortField: BeaconSortField = .discoveryOrder
     @State private var sortDirection: BeaconSortDirection = .ascending
+    @State private var isNearbyDeviceListCollapsed = false
 
     private var filteredDevices: [DiscoveredDevice] {
         sortDevices(store.scanner.devices.filter { $0.matchesBeaconSearch(searchText) })
@@ -125,9 +126,19 @@ struct BeaconsView: View {
                             Text("已发现 \(store.scanner.devices.count) 个设备，当前显示 \(filteredDevices.count) 个")
                                 .foregroundStyle(.secondary)
                             Spacer()
+                            Button(isNearbyDeviceListCollapsed ? "展开列表" : "折叠列表") {
+                                isNearbyDeviceListCollapsed.toggle()
+                            }
+                            .disabled(store.scanner.devices.isEmpty)
                         }
 
-                        if store.scanner.devices.isEmpty {
+                        if isNearbyDeviceListCollapsed {
+                            EmptyState(
+                                systemImage: "sidebar.leading",
+                                title: "附近设备列表已折叠",
+                                message: "扫描和搜索仍会继续更新；展开后可选择或绑定设备。"
+                            )
+                        } else if store.scanner.devices.isEmpty {
                             EmptyState(
                                 systemImage: "dot.radiowaves.left.and.right",
                                 title: "尚未发现蓝牙设备",
@@ -446,6 +457,7 @@ private struct BeaconEditor: View {
                     Text(beacon.selectedFieldSummary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    BeaconRuntimeStatusView(status: store.runtimeStatus(for: beacon))
                 }
                 Spacer()
                 Button("稳定性测试") {
@@ -524,6 +536,39 @@ private struct BeaconEditor: View {
                 value.wrappedValue = trimmed.isEmpty ? nil : trimmed
             }
         )
+    }
+}
+
+private struct BeaconRuntimeStatusView: View {
+    let status: BeaconRuntimeStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: status.systemImage)
+            Text(status.label)
+                .fontWeight(.medium)
+            Text(status.detail)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(.caption)
+        .foregroundStyle(statusColor)
+    }
+
+    private var statusColor: Color {
+        switch status.state {
+        case .present:
+            return .green
+        case .weakSignal, .stale:
+            return .orange
+        case .scanning:
+            return .blue
+        case .scanPaused, .notDetected:
+            return .secondary
+        case .notConfigured, .bluetoothUnavailable:
+            return .red
+        }
     }
 }
 
