@@ -39,6 +39,8 @@ final class AutoLockerStore: ObservableObject {
     private var guardScanGraceResetsAbsence = true
     private var recoveredScanForCurrentAbsence = false
     private var networkSuppressionSSID: String?
+    private var blacklistAutoEnableNetwork: String?
+    private var blacklistAutoEnableHandledForCurrentMatch = false
     private var lastUnavailableLogReason: String?
 
     init() {
@@ -913,10 +915,33 @@ final class AutoLockerStore: ObservableObject {
 
     private func applyBlacklistRuleIfNeeded() {
         let blacklist = normalizedList(networkRules.blacklistSSIDs)
-        guard let matchedNetwork = matchedCurrentNetwork(in: blacklist),
-              networkRules.blacklistBehavior == .enableGuard,
-              !guardEnabled,
-              !beacons.isEmpty,
+        guard networkRules.blacklistBehavior == .enableGuard else {
+            blacklistAutoEnableNetwork = nil
+            blacklistAutoEnableHandledForCurrentMatch = false
+            return
+        }
+
+        guard let matchedNetwork = matchedCurrentNetwork(in: blacklist) else {
+            blacklistAutoEnableNetwork = nil
+            blacklistAutoEnableHandledForCurrentMatch = false
+            return
+        }
+
+        if blacklistAutoEnableNetwork != matchedNetwork {
+            blacklistAutoEnableNetwork = matchedNetwork
+            blacklistAutoEnableHandledForCurrentMatch = false
+        }
+
+        if blacklistAutoEnableHandledForCurrentMatch {
+            return
+        }
+
+        if guardEnabled {
+            blacklistAutoEnableHandledForCurrentMatch = true
+            return
+        }
+
+        guard !beacons.isEmpty,
               scanner.powerState == .poweredOn
         else {
             return
@@ -925,6 +950,7 @@ final class AutoLockerStore: ObservableObject {
         guardEnabled = true
         status = .guarding
         scanner.startScanning()
+        blacklistAutoEnableHandledForCurrentMatch = true
         addLog(.network, reason: "命中 Wi-Fi 黑名单，自动启用守护：\(matchedNetwork)")
     }
 
