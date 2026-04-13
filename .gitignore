@@ -44,6 +44,7 @@ fastlane/test_output/
 !.env.example
 prd/
 auto_locker_prd_v_1.md
+icon.png
 
 # Editors
 .vscode/
