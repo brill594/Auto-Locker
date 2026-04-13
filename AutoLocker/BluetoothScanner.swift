@@ -73,6 +73,11 @@ final class BluetoothScanner: NSObject, ObservableObject {
         devices.removeAll { $0.lastSeen < cutoff }
         onDevicesChanged?()
     }
+
+    func clearDevices() {
+        devices.removeAll()
+        onDevicesChanged?()
+    }
 }
 
 private extension BluetoothScanner {

@@ -2,6 +2,17 @@ import SwiftUI
 
 struct BeaconsView: View {
     @EnvironmentObject private var store: AutoLockerStore
+    @State private var searchText = ""
+    @State private var sortField: BeaconSortField = .discoveryOrder
+    @State private var sortDirection: BeaconSortDirection = .ascending
+
+    private var filteredDevices: [DiscoveredDevice] {
+        sortDevices(store.scanner.devices.filter { $0.matchesBeaconSearch(searchText) })
+    }
+
+    private var filteredBeaconIDs: [Beacon.ID] {
+        sortBeacons(store.beacons.filter { $0.matchesBeaconSearch(searchText) }).map(\.id)
+    }
 
     var body: some View {
         ScrollView {
@@ -10,6 +21,48 @@ struct BeaconsView: View {
                     title: "信标",
                     subtitle: "扫描附近蓝牙设备，绑定一个或多个作为在场判断依据。"
                 )
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("搜索设备名、厂商、厂商数据、系统标识符", text: $searchText)
+                                .textFieldStyle(.plain)
+                            if !searchText.isEmpty {
+                                Button("清除") {
+                                    searchText = ""
+                                }
+                            }
+                        }
+                        .padding(10)
+                        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+
+                        HStack {
+                            Picker("排序", selection: $sortField) {
+                                ForEach(BeaconSortField.allCases) { field in
+                                    Text(field.label).tag(field)
+                                }
+                            }
+                            .frame(maxWidth: 280)
+
+                            Picker("方向", selection: $sortDirection) {
+                                ForEach(BeaconSortDirection.allCases) { direction in
+                                    Text(direction.label).tag(direction)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 140)
+                        }
+
+                        Text("macOS 的 CoreBluetooth 不暴露真实 MAC 地址；这里会搜索系统设备标识符、设备名、厂商名和 Manufacturer Data。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(4)
+                } label: {
+                    Label("搜索", systemImage: "magnifyingglass")
+                }
 
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
@@ -27,6 +80,14 @@ struct BeaconsView: View {
                                 .disabled(store.guardEnabled && store.scanner.isScanning)
                                 .buttonStyle(.borderedProminent)
                             }
+                            Button("长扫描 30 秒") {
+                                store.startManualScan(durationOverride: 30)
+                            }
+                            .disabled(store.guardEnabled || store.scanner.isScanning)
+                            Button("清空结果") {
+                                store.clearDiscoveredDevices()
+                            }
+                            .disabled(store.scanner.devices.isEmpty || store.scanner.isScanning)
                         }
 
                         Stepper(
@@ -45,18 +106,29 @@ struct BeaconsView: View {
                                 .foregroundStyle(.red)
                         }
 
+                        HStack {
+                            Text("已发现 \(store.scanner.devices.count) 个设备，当前显示 \(filteredDevices.count) 个")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+
                         if store.scanner.devices.isEmpty {
                             EmptyState(
                                 systemImage: "dot.radiowaves.left.and.right",
                                 title: "尚未发现蓝牙设备",
                                 message: "点击开始扫描，并确认系统已授予蓝牙权限。"
                             )
+                        } else if filteredDevices.isEmpty {
+                            EmptyState(
+                                systemImage: "magnifyingglass",
+                                title: "没有匹配的附近设备",
+                                message: "可按设备名、厂商名、厂商数据或系统设备标识符搜索。"
+                            )
                         } else {
-                            VStack(spacing: 8) {
-                                ForEach(store.scanner.devices.prefix(40)) { device in
+                            LazyVStack(spacing: 8) {
+                                ForEach(filteredDevices) { device in
                                     HStack(spacing: 12) {
-                                        Image(systemName: "antenna.radiowaves.left.and.right")
-                                            .foregroundStyle(.secondary)
+                                        ManufacturerIconView(systemName: device.manufacturerIconSystemName)
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text(device.displayName)
                                                 .font(.headline)
@@ -99,10 +171,18 @@ struct BeaconsView: View {
                                 title: "尚未绑定信标",
                                 message: "至少绑定一个信标后，守护才可启用。"
                             )
+                        } else if filteredBeaconIDs.isEmpty {
+                            EmptyState(
+                                systemImage: "magnifyingglass",
+                                title: "没有匹配的已绑定信标",
+                                message: "可按设备名、厂商名、厂商数据或系统设备标识符搜索。"
+                            )
                         } else {
-                            ForEach($store.beacons) { $beacon in
-                                BeaconEditor(beacon: $beacon)
-                                    .environmentObject(store)
+                            ForEach(filteredBeaconIDs, id: \.self) { beaconID in
+                                if let binding = beaconBinding(for: beaconID) {
+                                    BeaconEditor(beacon: binding)
+                                        .environmentObject(store)
+                                }
                             }
                         }
                     }
@@ -155,6 +235,159 @@ struct BeaconsView: View {
             .padding(24)
         }
     }
+
+    private func beaconBinding(for id: Beacon.ID) -> Binding<Beacon>? {
+        guard let index = store.beacons.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+
+        return $store.beacons[index]
+    }
+
+    private func sortDevices(_ devices: [DiscoveredDevice]) -> [DiscoveredDevice] {
+        devices.enumerated().sorted { lhs, rhs in
+            let result = compareDevices(lhs, rhs)
+            if result == .orderedSame {
+                return lhs.offset < rhs.offset
+            }
+            return sortDirection == .ascending ? result == .orderedAscending : result == .orderedDescending
+        }
+        .map(\.element)
+    }
+
+    private func sortBeacons(_ beacons: [Beacon]) -> [Beacon] {
+        beacons.enumerated().sorted { lhs, rhs in
+            let result = compareBeacons(lhs, rhs)
+            if result == .orderedSame {
+                return lhs.offset < rhs.offset
+            }
+            return sortDirection == .ascending ? result == .orderedAscending : result == .orderedDescending
+        }
+        .map(\.element)
+    }
+
+    private func compareDevices(
+        _ lhs: EnumeratedSequence<[DiscoveredDevice]>.Element,
+        _ rhs: EnumeratedSequence<[DiscoveredDevice]>.Element
+    ) -> ComparisonResult {
+        switch sortField {
+        case .discoveryOrder:
+            return compare(lhs.offset, rhs.offset)
+        case .manufacturerName:
+            return compareOptionalText(lhs.element.manufacturerDisplayName, rhs.element.manufacturerDisplayName)
+        case .rssi:
+            return compare(lhs.element.rssi, rhs.element.rssi)
+        case .deviceName:
+            return compareText(lhs.element.displayName, rhs.element.displayName)
+        case .lastSeen:
+            return compare(lhs.element.lastSeen, rhs.element.lastSeen)
+        }
+    }
+
+    private func compareBeacons(
+        _ lhs: EnumeratedSequence<[Beacon]>.Element,
+        _ rhs: EnumeratedSequence<[Beacon]>.Element
+    ) -> ComparisonResult {
+        switch sortField {
+        case .discoveryOrder:
+            return compare(lhs.offset, rhs.offset)
+        case .manufacturerName:
+            return compareOptionalText(lhs.element.manufacturerDisplayName, rhs.element.manufacturerDisplayName)
+        case .rssi:
+            return compareOptionalInt(lhs.element.lastRSSI, rhs.element.lastRSSI)
+        case .deviceName:
+            return compareText(lhs.element.displayName, rhs.element.displayName)
+        case .lastSeen:
+            return compareOptionalDate(lhs.element.lastSeen, rhs.element.lastSeen)
+        }
+    }
+
+    private func compareText(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        lhs.localizedStandardCompare(rhs)
+    }
+
+    private func compareOptionalText(_ lhs: String?, _ rhs: String?) -> ComparisonResult {
+        guard let lhs, !lhs.isEmpty else {
+            if rhs == nil || rhs?.isEmpty == true {
+                return .orderedSame
+            }
+            return sortDirection == .ascending ? .orderedDescending : .orderedAscending
+        }
+        guard let rhs, !rhs.isEmpty else {
+            return sortDirection == .ascending ? .orderedAscending : .orderedDescending
+        }
+        return compareText(lhs, rhs)
+    }
+
+    private func compareOptionalInt(_ lhs: Int?, _ rhs: Int?) -> ComparisonResult {
+        guard let lhs else {
+            if rhs == nil {
+                return .orderedSame
+            }
+            return sortDirection == .ascending ? .orderedDescending : .orderedAscending
+        }
+        guard let rhs else {
+            return sortDirection == .ascending ? .orderedAscending : .orderedDescending
+        }
+        return compare(lhs, rhs)
+    }
+
+    private func compareOptionalDate(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {
+        guard let lhs else {
+            if rhs == nil {
+                return .orderedSame
+            }
+            return sortDirection == .ascending ? .orderedDescending : .orderedAscending
+        }
+        guard let rhs else {
+            return sortDirection == .ascending ? .orderedAscending : .orderedDescending
+        }
+        return compare(lhs, rhs)
+    }
+
+    private func compare<T: Comparable>(_ lhs: T, _ rhs: T) -> ComparisonResult {
+        if lhs < rhs {
+            return .orderedAscending
+        }
+        if lhs > rhs {
+            return .orderedDescending
+        }
+        return .orderedSame
+    }
+}
+
+private enum BeaconSortField: String, CaseIterable, Identifiable {
+    case discoveryOrder
+    case manufacturerName
+    case rssi
+    case deviceName
+    case lastSeen
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .discoveryOrder: return "发现顺序"
+        case .manufacturerName: return "厂商名"
+        case .rssi: return "信号强度"
+        case .deviceName: return "设备名"
+        case .lastSeen: return "最后出现"
+        }
+    }
+}
+
+private enum BeaconSortDirection: String, CaseIterable, Identifiable {
+    case ascending
+    case descending
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .ascending: return "升序"
+        case .descending: return "降序"
+        }
+    }
 }
 
 private struct BeaconEditor: View {
@@ -164,6 +397,7 @@ private struct BeaconEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
+                ManufacturerIconView(systemName: beacon.manufacturerIconSystemName)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         TextField("展示名称", text: $beacon.displayName)
@@ -258,5 +492,74 @@ private struct BeaconEditor: View {
                 value.wrappedValue = trimmed.isEmpty ? nil : trimmed
             }
         )
+    }
+}
+
+private struct ManufacturerIconView: View {
+    let systemName: String?
+
+    var body: some View {
+        Image(systemName: systemName ?? "antenna.radiowaves.left.and.right")
+            .font(.title3)
+            .foregroundStyle(systemName == nil ? Color.secondary : Color.accentColor)
+            .frame(width: 26, height: 26)
+    }
+}
+
+private extension DiscoveredDevice {
+    func matchesBeaconSearch(_ query: String) -> Bool {
+        BeaconSearchMatcher.matches(query, fields: [
+            displayName,
+            name,
+            localName,
+            identifier,
+            manufacturerDataHex,
+            manufacturerName,
+            manufacturerDisplayName,
+            manufacturerCompanyID.map { String(format: "0x%04X", Int($0)) }
+        ])
+    }
+}
+
+private extension Beacon {
+    func matchesBeaconSearch(_ query: String) -> Bool {
+        BeaconSearchMatcher.matches(query, fields: [
+            displayName,
+            manufacturerInfo,
+            manufacturerName,
+            manufacturerDisplayName,
+            expectedIdentifier,
+            expectedName,
+            expectedManufacturerDataHex,
+            manufacturerCompanyID.map { String(format: "0x%04X", Int($0)) }
+        ])
+    }
+}
+
+private enum BeaconSearchMatcher {
+    static func matches(_ query: String, fields: [String?]) -> Bool {
+        let normalizedQuery = query.normalizedBeaconSearchText
+        guard !normalizedQuery.isEmpty else {
+            return true
+        }
+
+        let compactQuery = query.compactBeaconSearchText
+        return fields.contains { field in
+            guard let field else {
+                return false
+            }
+            return field.normalizedBeaconSearchText.contains(normalizedQuery)
+                || (!compactQuery.isEmpty && field.compactBeaconSearchText.contains(compactQuery))
+        }
+    }
+}
+
+private extension String {
+    var normalizedBeaconSearchText: String {
+        trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var compactBeaconSearchText: String {
+        normalizedBeaconSearchText.filter { $0.isLetter || $0.isNumber }
     }
 }

@@ -85,12 +85,12 @@ final class AutoLockerStore: ObservableObject {
         return warnings
     }
 
-    func startManualScan() {
+    func startManualScan(durationOverride: Int? = nil) {
         if guardEnabled {
             scanner.startScanning()
             addLog(.scan, reason: "守护已开启，保持持续蓝牙扫描")
         } else {
-            let duration = max(5, advanced.discoveryScanDurationSeconds)
+            let duration = max(5, durationOverride ?? advanced.discoveryScanDurationSeconds)
             scanner.startScanning(duration: TimeInterval(duration))
             addLog(.scan, reason: "用户启动蓝牙扫描：\(duration) 秒")
         }
@@ -102,6 +102,11 @@ final class AutoLockerStore: ObservableObject {
         }
         scanner.stopScanning()
         addLog(.scan, reason: "用户暂停蓝牙扫描")
+    }
+
+    func clearDiscoveredDevices() {
+        scanner.clearDevices()
+        addLog(.scan, reason: "清空扫描结果")
     }
 
     func setGuardEnabled(_ enabled: Bool) {

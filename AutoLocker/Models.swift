@@ -222,6 +222,13 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
     var localName: String?
     var manufacturerDataHex: String?
     var manufacturerCompanyID: UInt16?
+    var serviceUUIDs: [String]
+    var solicitedServiceUUIDs: [String]
+    var overflowServiceUUIDs: [String]
+    var serviceDataHex: [String: String]
+    var txPowerLevel: Int?
+    var isConnectable: Bool?
+    var advertisementKeys: [String]
     var rssi: Int
     var lastSeen: Date
 
@@ -243,6 +250,10 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
         manufacturerCompanyID.map { ManufacturerDirectory.displayName(for: $0) }
     }
 
+    var manufacturerIconSystemName: String? {
+        ManufacturerDirectory.iconSystemName(for: manufacturerCompanyID)
+    }
+
     var summary: String {
         var parts = ["RSSI \(rssi) dBm"]
         if let manufacturerDisplayName {
@@ -250,6 +261,27 @@ struct DiscoveredDevice: Identifiable, Codable, Hashable {
         }
         if let manufacturerDataHex, !manufacturerDataHex.isEmpty {
             parts.append("厂商数据 \(manufacturerDataHex.prefix(16))")
+        }
+        if !serviceUUIDs.isEmpty {
+            parts.append("服务 \(serviceUUIDs.prefix(3).joined(separator: ", "))")
+        }
+        if let isConnectable {
+            parts.append(isConnectable ? "可连接" : "不可连接")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    var rawFieldSummary: String {
+        var parts: [String] = []
+        if !serviceUUIDs.isEmpty {
+            parts.append("Service UUIDs: \(serviceUUIDs.joined(separator: ", "))")
+        }
+        if !serviceDataHex.isEmpty {
+            let serviceData = serviceDataHex.keys.sorted().map { "\($0)=\(serviceDataHex[$0] ?? "")" }
+            parts.append("Service Data: \(serviceData.joined(separator: ", "))")
+        }
+        if !advertisementKeys.isEmpty {
+            parts.append("Keys: \(advertisementKeys.joined(separator: ", "))")
         }
         return parts.joined(separator: " · ")
     }
@@ -296,11 +328,54 @@ struct Beacon: Identifiable, Codable, Hashable {
         return manufacturerInfo
     }
 
+    var manufacturerIconSystemName: String? {
+        ManufacturerDirectory.iconSystemName(for: manufacturerCompanyID)
+    }
+
     var selectedFieldSummary: String {
         if selectedFields.isEmpty {
             return "未选择识别字段"
         }
         return selectedFields.map(\.label).joined(separator: "、")
+    }
+}
+
+extension ManufacturerDirectory {
+    static func iconSystemName(for companyID: UInt16?) -> String? {
+        guard let companyID else {
+            return nil
+        }
+
+        switch companyID {
+        case 0x004C:
+            return "apple.logo"
+        case 0x0002, 0x000A, 0x001D, 0x00B8, 0x00D7, 0x00D8, 0x011A:
+            return "cpu"
+        case 0x0006:
+            return "square.grid.2x2"
+        case 0x00E0, 0x018E:
+            return "globe"
+        case 0x0056, 0x0057, 0x009E, 0x00CC, 0x012D, 0x0EDE:
+            return "headphones"
+        case 0x0059:
+            return "dot.radiowaves.left.and.right"
+        case 0x006B, 0x009F, 0x00D1, 0x0157:
+            return "heart.circle"
+        case 0x0075, 0x027D, 0x038F, 0x072F, 0x079A, 0x0837, 0x08A4:
+            return "iphone"
+        case 0x0087, 0x067C:
+            return "location.circle"
+        case 0x0171:
+            return "shippingbox"
+        case 0x01AB, 0x058E:
+            return "person.2.circle"
+        case 0x01DA:
+            return "keyboard"
+        case 0x0CC2:
+            return "bolt.circle"
+        default:
+            return nil
+        }
     }
 }
 

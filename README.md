@@ -25,7 +25,10 @@ xcodebuild -project AutoLocker.xcodeproj -scheme AutoLocker -configuration Debug
 - macOS 主窗口应用，使用 SwiftUI 分栏：总览、信标、规则、网络规则、日志、高级。
 - 菜单栏常驻入口：开启/关闭守护、暂停、恢复、查看信标状态、打开主窗口、打开日志。
 - CoreBluetooth 定时扫描、发现设备、绑定/移除信标、配置识别字段和缺失容忍。
-- 解析 Manufacturer Data 中的厂商 ID，通过内置常见厂商名单显示厂商名。
+- 解析 Manufacturer Data 中的厂商 ID，通过 Bluetooth SIG Company Identifiers 内置表显示厂商名。
+- 为常见厂商显示对应图标，未命中图标映射时沿用默认蓝牙天线图标。
+- 信标页支持按设备名、厂商、厂商数据、系统标识符搜索，并可按发现顺序、厂商名、信号强度、设备名、最后出现时间排序。
+- 信标页提供 30 秒长扫描和清空扫描结果，便于排查低频广播设备。
 - 多信标规则：任一、全部、至少 N 个。
 - 离开判定：检测不到设备、RSSI 阈值。
 - 抗抖：延迟吸收、连续丢失判定。
