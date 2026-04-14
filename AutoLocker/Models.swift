@@ -944,6 +944,96 @@ struct PersistedState: Codable {
     var advanced: AdvancedSettings
     var logs: [EventLog]
     var activePause: ActivePause?
+    var timerLockEnd: Date?
+    var timerLockDurationMinutes: Int
+
+    init(
+        guardEnabled: Bool,
+        beacons: [Beacon],
+        rules: GuardRules,
+        networkRules: NetworkRules,
+        advanced: AdvancedSettings,
+        logs: [EventLog],
+        activePause: ActivePause?,
+        timerLockEnd: Date?,
+        timerLockDurationMinutes: Int
+    ) {
+        self.guardEnabled = guardEnabled
+        self.beacons = beacons
+        self.rules = rules
+        self.networkRules = networkRules
+        self.advanced = advanced
+        self.logs = logs
+        self.activePause = activePause
+        self.timerLockEnd = timerLockEnd
+        self.timerLockDurationMinutes = timerLockDurationMinutes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case guardEnabled
+        case beacons
+        case rules
+        case networkRules
+        case advanced
+        case logs
+        case activePause
+        case timerLockEnd
+        case timerLockDurationMinutes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guardEnabled = try container.decodeIfPresent(Bool.self, forKey: .guardEnabled) ?? false
+        beacons = try container.decodeIfPresent([Beacon].self, forKey: .beacons) ?? []
+        rules = try container.decodeIfPresent(GuardRules.self, forKey: .rules) ?? GuardRules()
+        networkRules = try container.decodeIfPresent(NetworkRules.self, forKey: .networkRules) ?? NetworkRules()
+        advanced = try container.decodeIfPresent(AdvancedSettings.self, forKey: .advanced) ?? AdvancedSettings()
+        logs = try container.decodeIfPresent([EventLog].self, forKey: .logs) ?? []
+        activePause = try container.decodeIfPresent(ActivePause.self, forKey: .activePause)
+        timerLockEnd = try container.decodeIfPresent(Date.self, forKey: .timerLockEnd)
+        timerLockDurationMinutes = try container.decodeIfPresent(Int.self, forKey: .timerLockDurationMinutes) ?? 10
+    }
+}
+
+struct BluetoothRuntimeSnapshot: Codable, Equatable {
+    var powerState: BluetoothPowerState = .unknown
+    var isScanning = false
+    var scanStartedAt: Date?
+    var scanEndsAt: Date?
+    var scanRemainingSeconds = 0
+    var lastError: String?
+    var devices: [DiscoveredDevice] = []
+}
+
+struct SharedRuntimeState: Codable {
+    var updatedAt: Date
+    var guardEnabled: Bool
+    var status: GuardRuntimeState
+    var unavailableReason: String?
+    var activePause: ActivePause?
+    var logs: [EventLog]
+    var promptReason: String
+    var countdownRemaining: Int
+    var timerLockEnd: Date?
+    var timerLockDurationMinutes: Int
+    var lastStabilityResult: StabilityTestResult?
+    var bluetooth: BluetoothRuntimeSnapshot
+}
+
+enum AgentCommandKind: String, Codable {
+    case startManualScan
+    case stopManualScan
+    case clearDevices
+    case startStabilityTest
+    case stopStabilityTest
+}
+
+struct AgentCommand: Codable {
+    var id: UUID = UUID()
+    var requestedAt: Date = Date()
+    var kind: AgentCommandKind
+    var scanDurationSeconds: Int?
+    var beaconID: UUID?
 }
 
 struct ScanDiagnosticsExport: Codable {

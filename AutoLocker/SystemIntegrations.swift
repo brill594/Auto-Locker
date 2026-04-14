@@ -22,6 +22,10 @@ enum AppLauncher {
     static let mainBundleIdentifier = "com.brilliant.AutoLocker"
     static let agentBundleIdentifier = "com.brilliant.AutoLocker.Agent"
 
+    static var hasBundledBackgroundAgent: Bool {
+        bundledAgentURL != nil
+    }
+
     static func registerBackgroundAgentIfPossible() {
         guard AutoLockerProcessContext.currentMode == .foregroundApp else {
             return
@@ -30,7 +34,9 @@ enum AppLauncher {
         if #available(macOS 13.0, *) {
             do {
                 try SMAppService.loginItem(identifier: agentBundleIdentifier).register()
+                SharedDebugTrace.log("已注册登录项 Agent")
             } catch {
+                SharedDebugTrace.log("注册登录项 Agent 失败：\(error.localizedDescription)")
                 NSLog("AutoLocker: failed to register login item: \(error.localizedDescription)")
             }
         }
@@ -43,27 +49,41 @@ enum AppLauncher {
 
         let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
         for app in runningAgents where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            SharedDebugTrace.log("终止已有 Agent 进程 pid=\(app.processIdentifier)")
             app.terminate()
         }
     }
 
-    static func launchBackgroundAgentIfNeeded() {
-        guard AutoLockerProcessContext.currentMode == .foregroundApp,
-              let agentURL = bundledAgentURL
-        else {
+    static func isBackgroundAgentRunning() -> Bool {
+        let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
+        return runningAgents.contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+    }
+
+    static func launchBackgroundAgentIfNeeded(reason: String = "未提供原因") {
+        guard AutoLockerProcessContext.currentMode == .foregroundApp else {
+            return
+        }
+
+        guard let agentURL = bundledAgentURL else {
+            SharedDebugTrace.log("跳过拉起 Agent：未找到内嵌 Agent，原因=\(reason)")
             return
         }
 
         let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
         guard runningAgents.isEmpty else {
+            SharedDebugTrace.log("跳过拉起 Agent：已在运行，原因=\(reason)")
             return
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false
+        SharedDebugTrace.log("开始拉起 Agent，原因=\(reason)")
         NSWorkspace.shared.openApplication(at: agentURL, configuration: configuration) { _, error in
             if let error {
+                SharedDebugTrace.log("拉起 Agent 失败：\(error.localizedDescription)，原因=\(reason)")
                 NSLog("AutoLocker: failed to launch background agent: \(error.localizedDescription)")
+            } else {
+                SharedDebugTrace.log("拉起 Agent 请求已提交，原因=\(reason)")
             }
         }
     }
@@ -77,8 +97,10 @@ enum AppLauncher {
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
+        SharedDebugTrace.log("请求打开主窗口，section=\(section.rawValue)")
         NSWorkspace.shared.openApplication(at: mainAppURL, configuration: configuration) { _, error in
             if let error {
+                SharedDebugTrace.log("打开主窗口失败：\(error.localizedDescription)")
                 NSLog("AutoLocker: failed to open main app: \(error.localizedDescription)")
             }
         }
@@ -278,6 +300,46 @@ enum NotificationController {
     }
 }
 
+enum SharedDebugTrace {
+    private static let queue = DispatchQueue(label: "AutoLocker.DebugTrace")
+    private static let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static func log(_ message: String) {
+        let process = AutoLockerProcessContext.currentMode == .backgroundAgent ? "agent" : "app"
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let timestamp = formatter.string(from: Date())
+        let line = "\(timestamp) [\(process) pid=\(pid)] \(message)\n"
+        let url = FileLocations.debugTraceFile
+
+        queue.async {
+            do {
+                try FileManager.default.createDirectory(
+                    at: FileLocations.applicationSupportDirectory,
+                    withIntermediateDirectories: true
+                )
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let handle = try FileHandle(forWritingTo: url)
+                    defer { try? handle.close() }
+                    handle.seekToEndOfFile()
+                    if let data = line.data(using: .utf8) {
+                        handle.write(data)
+                    }
+                } else if let data = line.data(using: .utf8) {
+                    try data.write(to: url, options: .atomic)
+                }
+            } catch {
+                NSLog("AutoLocker: failed to append debug trace: \(error.localizedDescription)")
+            }
+        }
+
+        NSLog("AutoLocker trace: \(message)")
+    }
+}
+
 enum FileLocations {
     static var applicationSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -288,7 +350,19 @@ enum FileLocations {
         applicationSupportDirectory.appendingPathComponent("state.json")
     }
 
+    static var runtimeStateFile: URL {
+        applicationSupportDirectory.appendingPathComponent("runtime.json")
+    }
+
+    static var agentCommandFile: URL {
+        applicationSupportDirectory.appendingPathComponent("agent-command.json")
+    }
+
     static var mainAppLaunchRequestFile: URL {
         applicationSupportDirectory.appendingPathComponent("launch-request.txt")
+    }
+
+    static var debugTraceFile: URL {
+        applicationSupportDirectory.appendingPathComponent("debug-trace.log")
     }
 }

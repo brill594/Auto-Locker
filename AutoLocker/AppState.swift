@@ -30,6 +30,7 @@ final class AutoLockerStore: ObservableObject {
     private var evaluationTimer: Timer?
     private var promptTimer: Timer?
     private var runtimeSaveWorkItem: DispatchWorkItem?
+    private var runtimeMirrorSaveWorkItem: DispatchWorkItem?
     private var configurationCommitWorkItem: DispatchWorkItem?
     private var saveFeedbackDismissWorkItem: DispatchWorkItem?
     private let saveQueue = DispatchQueue(label: "AutoLocker.saveQueue", qos: .utility)
@@ -42,6 +43,13 @@ final class AutoLockerStore: ObservableObject {
     private var blacklistAutoEnableNetwork: String?
     private var blacklistAutoEnableHandledForCurrentMatch = false
     private var lastUnavailableLogReason: String?
+    private var lastPersistedStateModifiedAt: Date?
+    private var lastRuntimeStateModifiedAt: Date?
+    private var lastProcessedAgentCommandID: UUID?
+    private var isApplyingExternalState = false
+    private var lastRuntimeHeartbeatAt: Date?
+    private var lastTracedPersistedSignature: String?
+    private var lastTracedRuntimeSignature: String?
 
     init() {
         load()
@@ -52,8 +60,20 @@ final class AutoLockerStore: ObservableObject {
         wifiMonitor.start()
         startEvaluationTimer()
 
+        if shouldDeferBluetoothToBackgroundAgent {
+            loadRuntimeMirror()
+        } else {
+            scheduleRuntimeMirrorSave()
+        }
+
         if guardEnabled && advanced.autoRestoreGuard {
-            refreshAvailability(reason: "应用启动后自动恢复守护")
+            if shouldDeferBluetoothToBackgroundAgent {
+                if lastRuntimeStateModifiedAt == nil {
+                    updatePassiveGuardStatus()
+                }
+            } else {
+                refreshAvailability(reason: "应用启动后自动恢复守护")
+            }
         } else {
             guardEnabled = false
             status = .disabled
@@ -64,9 +84,14 @@ final class AutoLockerStore: ObservableObject {
         evaluationTimer?.invalidate()
         promptTimer?.invalidate()
         runtimeSaveWorkItem?.cancel()
+        runtimeMirrorSaveWorkItem?.cancel()
         configurationCommitWorkItem?.cancel()
         saveFeedbackDismissWorkItem?.cancel()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    private var ownsBluetoothScanning: Bool {
+        AutoLockerProcessContext.currentMode == .backgroundAgent
     }
 
     var currentSSID: String? {
@@ -131,43 +156,62 @@ final class AutoLockerStore: ObservableObject {
     }
 
     func startManualScan(durationOverride: Int? = nil) {
-        if guardEnabled {
-            scanner.startScanning()
-            addLog(.scan, reason: "守护已开启，保持持续蓝牙扫描")
+        if ownsBluetoothScanning {
+            startManualScanLocally(durationOverride: durationOverride)
         } else {
             let duration = max(5, durationOverride ?? advanced.discoveryScanDurationSeconds)
-            scanner.startScanning(duration: TimeInterval(duration))
-            addLog(.scan, reason: "用户启动蓝牙扫描：\(duration) 秒")
+            sendAgentCommand(.startManualScan, scanDurationSeconds: duration)
         }
     }
 
     func stopManualScan() {
-        guard !guardEnabled else {
-            return
+        if ownsBluetoothScanning {
+            stopManualScanLocally()
+        } else {
+            sendAgentCommand(.stopManualScan)
         }
-        scanner.stopScanning()
-        addLog(.scan, reason: "用户暂停蓝牙扫描")
     }
 
     func clearDiscoveredDevices() {
-        scanner.clearDevices()
-        addLog(.scan, reason: "清空扫描结果")
+        if ownsBluetoothScanning {
+            clearDiscoveredDevicesLocally()
+        } else {
+            sendAgentCommand(.clearDevices)
+        }
     }
 
     func setGuardEnabled(_ enabled: Bool) {
+        traceDebug("用户切换守护：enabled=\(enabled)")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "用户切换守护")
+        if ownsBluetoothScanning {
+            if enabled {
+                guardEnabled = true
+                scanner.startScanning()
+                refreshAvailability(reason: "用户开启守护")
+            } else {
+                guardEnabled = false
+                activePause = nil
+                status = .disabled
+                promptTimer?.invalidate()
+                promptPresenter.close()
+                scanner.stopScanning()
+                resetAbsenceCounters()
+                addLog(.settings, reason: "用户关闭守护")
+            }
+            return
+        }
+
         if enabled {
             guardEnabled = true
-            scanner.startScanning()
-            refreshAvailability(reason: "用户开启守护")
+            updatePassiveGuardStatus()
         } else {
             guardEnabled = false
             activePause = nil
             status = .disabled
             promptTimer?.invalidate()
             promptPresenter.close()
-            scanner.stopScanning()
+            scanner.applyRuntimeSnapshot(BluetoothRuntimeSnapshot())
             resetAbsenceCounters()
-            addLog(.settings, reason: "用户关闭守护")
         }
     }
 
@@ -175,15 +219,19 @@ final class AutoLockerStore: ObservableObject {
         if beacons.contains(where: { $0.expectedIdentifier == device.identifier }) {
             return
         }
-        if !guardEnabled && scanner.isScanning {
+        if ownsBluetoothScanning && !guardEnabled && scanner.isScanning {
             scanner.stopScanning()
         }
         var beacon = Beacon(from: device)
         beacon.isPrimary = beacons.isEmpty
         beacons.append(beacon)
         rules.requiredBeaconCount = min(max(1, rules.requiredBeaconCount), max(1, beacons.count))
-        addLog(.settings, reason: "绑定信标：\(beacon.displayName)", relatedBeacons: [beacon])
-        refreshAvailability(reason: "绑定信标后刷新守护状态")
+        if ownsBluetoothScanning {
+            addLog(.settings, reason: "绑定信标：\(beacon.displayName)", relatedBeacons: [beacon])
+            refreshAvailability(reason: "绑定信标后刷新守护状态")
+        } else {
+            updatePassiveGuardStatus()
+        }
     }
 
     func removeBeacon(_ beacon: Beacon) {
@@ -192,8 +240,12 @@ final class AutoLockerStore: ObservableObject {
             beacons[0].isPrimary = true
         }
         rules.requiredBeaconCount = min(max(1, rules.requiredBeaconCount), max(1, beacons.count))
-        addLog(.settings, reason: "移除信标：\(beacon.displayName)")
-        refreshAvailability(reason: "移除信标后刷新守护状态")
+        if ownsBluetoothScanning {
+            addLog(.settings, reason: "移除信标：\(beacon.displayName)")
+            refreshAvailability(reason: "移除信标后刷新守护状态")
+        } else {
+            updatePassiveGuardStatus()
+        }
     }
 
     func setPrimary(_ beacon: Beacon) {
@@ -208,10 +260,14 @@ final class AutoLockerStore: ObservableObject {
             return
         }
         beacons[index] = beacon
-        addLog(.settings, reason: "更新信标识别依据：\(beacon.displayName)", relatedBeacons: [beacon])
+        if ownsBluetoothScanning {
+            addLog(.settings, reason: "更新信标识别依据：\(beacon.displayName)", relatedBeacons: [beacon])
+        }
     }
 
     func pause(_ mode: PauseMode, customUntil: Date? = nil) {
+        traceDebug("用户请求暂停：mode=\(mode.rawValue)")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "用户暂停守护")
         let now = Date()
         let until: Date?
         switch mode {
@@ -238,18 +294,28 @@ final class AutoLockerStore: ObservableObject {
         activePause = ActivePause(mode: mode, startedAt: now, until: until, wifiSSID: currentSSID ?? currentBSSID)
         status = .paused
         resetAbsenceCounters()
-        addLog(.pause, reason: activePause?.label ?? mode.label)
+        if ownsBluetoothScanning {
+            addLog(.pause, reason: activePause?.label ?? mode.label)
+        }
     }
 
     func resumeGuard(reason: String = "用户手动恢复守护") {
+        traceDebug("请求恢复守护：reason=\(reason)")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "恢复守护")
         activePause = nil
         resetAbsenceCounters()
         if guardEnabled {
-            refreshAvailability(reason: reason)
+            if ownsBluetoothScanning {
+                refreshAvailability(reason: reason)
+            } else {
+                updatePassiveGuardStatus()
+            }
         } else {
             status = .disabled
         }
-        addLog(.resume, reason: reason)
+        if ownsBluetoothScanning {
+            addLog(.resume, reason: reason)
+        }
     }
 
     func requestLocationPermissionIfNeeded() {
@@ -264,10 +330,17 @@ final class AutoLockerStore: ObservableObject {
         locationPermissionMonitor.refresh()
         wifiMonitor.refresh()
         objectWillChange.send()
-        evaluateGuard(trigger: "手动刷新网络状态")
+        if ownsBluetoothScanning {
+            evaluateGuard(trigger: "手动刷新网络状态")
+        } else {
+            syncRuntimeMirrorIfNeeded()
+        }
     }
 
     func cancelPendingLock() {
+        guard ownsBluetoothScanning else {
+            return
+        }
         promptTimer?.invalidate()
         promptPresenter.close()
         let reason = "用户取消本次锁屏"
@@ -289,6 +362,9 @@ final class AutoLockerStore: ObservableObject {
     }
 
     func performLock(reason: String, bypassPrompt: Bool = false) {
+        guard ownsBluetoothScanning else {
+            return
+        }
         promptTimer?.invalidate()
         promptPresenter.close()
         promptReason = ""
@@ -309,15 +385,21 @@ final class AutoLockerStore: ObservableObject {
     }
 
     func startTimerLock(minutes: Int) {
+        traceDebug("启动定时锁屏：minutes=\(minutes)")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "启动定时锁屏")
         let clamped = max(1, minutes)
         timerLockDurationMinutes = clamped
         timerLockEnd = Date().addingTimeInterval(TimeInterval(clamped * 60))
-        addLog(.timer, reason: "启动定时锁屏：\(clamped) 分钟")
+        if ownsBluetoothScanning {
+            addLog(.timer, reason: "启动定时锁屏：\(clamped) 分钟")
+        }
     }
 
     func cancelTimerLock() {
         timerLockEnd = nil
-        addLog(.timer, reason: "取消定时锁屏")
+        if ownsBluetoothScanning {
+            addLog(.timer, reason: "取消定时锁屏")
+        }
     }
 
     func deleteLog(_ log: EventLog) {
@@ -368,24 +450,36 @@ final class AutoLockerStore: ObservableObject {
                 encoder.dateEncodingStrategy = .iso8601
                 let data = try encoder.encode(payload)
                 try data.write(to: url, options: .atomic)
-                self.addLog(.scan, reason: "导出扫描诊断：\(url.lastPathComponent)")
+                if self.ownsBluetoothScanning {
+                    self.addLog(.scan, reason: "导出扫描诊断：\(url.lastPathComponent)")
+                }
             } catch {
-                self.addLog(.unavailable, reason: "导出扫描诊断失败：\(error.localizedDescription)")
+                if self.ownsBluetoothScanning {
+                    self.addLog(.unavailable, reason: "导出扫描诊断失败：\(error.localizedDescription)")
+                }
             }
         }
     }
 
     func startStabilityTest(for beacon: Beacon) {
-        stabilitySession = StabilityTestSession(beaconID: beacon.id)
-        lastStabilityResult = nil
-        addLog(.stability, reason: "开始稳定性测试：\(beacon.displayName)", relatedBeacons: [beacon])
+        if ownsBluetoothScanning {
+            stabilitySession = StabilityTestSession(beaconID: beacon.id)
+            lastStabilityResult = nil
+            addLog(.stability, reason: "开始稳定性测试：\(beacon.displayName)", relatedBeacons: [beacon])
+        } else {
+            sendAgentCommand(.startStabilityTest, beaconID: beacon.id)
+        }
     }
 
     func stopStabilityTest() {
-        guard let session = stabilitySession else {
-            return
+        if ownsBluetoothScanning {
+            guard let session = stabilitySession else {
+                return
+            }
+            finishStabilityTest(session)
+        } else {
+            sendAgentCommand(.stopStabilityTest)
         }
-        finishStabilityTest(session)
     }
 
     func fieldIsSelected(_ field: MatchField, for beacon: Beacon) -> Bool {
@@ -608,13 +702,37 @@ final class AutoLockerStore: ObservableObject {
         return score
     }
 
+    var shouldDeferBluetoothToBackgroundAgent: Bool {
+        !ownsBluetoothScanning
+    }
+
+    func updatePassiveGuardStatus() {
+        guard guardEnabled else {
+            status = .disabled
+            unavailableReason = nil
+            lastUnavailableLogReason = nil
+            return
+        }
+
+        guard !beacons.isEmpty else {
+            markUnavailable("无已绑定信标")
+            return
+        }
+
+        unavailableReason = nil
+        lastUnavailableLogReason = nil
+        status = activePause == nil ? .guarding : .paused
+    }
+
     private func configureCallbacks() {
         scanner.onDevicesChanged = { [weak self] in
             guard let self else {
                 return
             }
             self.objectWillChange.send()
-            self.evaluateGuard(trigger: "蓝牙扫描更新")
+            if self.ownsBluetoothScanning {
+                self.evaluateGuard(trigger: "蓝牙扫描更新")
+            }
         }
 
         scanner.onStateChanged = { [weak self] in
@@ -622,7 +740,9 @@ final class AutoLockerStore: ObservableObject {
                 return
             }
             self.objectWillChange.send()
-            self.refreshAvailability(reason: "蓝牙状态变化：\(self.scanner.powerState.label)")
+            if self.ownsBluetoothScanning {
+                self.refreshAvailability(reason: "蓝牙状态变化：\(self.scanner.powerState.label)")
+            }
         }
 
         Publishers.CombineLatest(
@@ -635,7 +755,9 @@ final class AutoLockerStore: ObservableObject {
                 return
             }
             self.objectWillChange.send()
-            self.evaluateGuard(trigger: "Wi-Fi 状态更新")
+            if self.ownsBluetoothScanning {
+                self.evaluateGuard(trigger: "Wi-Fi 状态更新")
+            }
         }
         .store(in: &cancellables)
 
@@ -664,18 +786,25 @@ final class AutoLockerStore: ObservableObject {
         )
         .dropFirst()
         .sink { [weak self] _, _, _, _ in
-            self?.scheduleConfigurationCommit()
+            guard let self, !self.isApplyingExternalState else {
+                return
+            }
+            self.scheduleConfigurationCommit()
         }
         .store(in: &cancellables)
 
         Publishers.MergeMany(
             $guardEnabled.map { _ in () }.eraseToAnyPublisher(),
-            $logs.map { _ in () }.eraseToAnyPublisher(),
-            $activePause.map { _ in () }.eraseToAnyPublisher()
+            $activePause.map { _ in () }.eraseToAnyPublisher(),
+            $timerLockEnd.map { _ in () }.eraseToAnyPublisher(),
+            $timerLockDurationMinutes.map { _ in () }.eraseToAnyPublisher()
         )
         .dropFirst()
         .sink { [weak self] _ in
-            self?.scheduleRuntimeSave()
+            guard let self, !self.isApplyingExternalState else {
+                return
+            }
+            self.scheduleRuntimeSave()
         }
         .store(in: &cancellables)
     }
@@ -716,9 +845,18 @@ final class AutoLockerStore: ObservableObject {
 
     private func tick() {
         wifiMonitor.refresh()
+        if shouldDeferBluetoothToBackgroundAgent {
+            syncPersistedStateIfNeeded()
+            syncRuntimeMirrorIfNeeded()
+            return
+        }
+
+        syncPersistedStateIfNeeded()
+        processPendingAgentCommandIfNeeded()
         evaluateTimerLock()
         evaluateStabilityTestSample()
         evaluateGuard(trigger: "周期检查")
+        scheduleRuntimeMirrorSave()
     }
 
     private func evaluateTimerLock() {
@@ -741,6 +879,11 @@ final class AutoLockerStore: ObservableObject {
 
         if beacons.isEmpty {
             markUnavailable("无已绑定信标")
+            return
+        }
+
+        if shouldDeferBluetoothToBackgroundAgent {
+            updatePassiveGuardStatus()
             return
         }
 
@@ -809,6 +952,11 @@ final class AutoLockerStore: ObservableObject {
             return
         }
 
+        guard !shouldDeferBluetoothToBackgroundAgent else {
+            updatePassiveGuardStatus()
+            return
+        }
+
         let now = Date()
         let alreadyInGrace = guardScanGraceUntil.map { now < $0 } ?? false
         if scanner.powerState == .poweredOn {
@@ -832,6 +980,11 @@ final class AutoLockerStore: ObservableObject {
 
     private func evaluateGuard(trigger: String) {
         if status == .prompting {
+            return
+        }
+
+        guard !shouldDeferBluetoothToBackgroundAgent else {
+            updatePassiveGuardStatus()
             return
         }
 
@@ -1177,21 +1330,10 @@ final class AutoLockerStore: ObservableObject {
 
     private func load() {
         do {
-            let url = FileLocations.stateFile
-            guard FileManager.default.fileExists(atPath: url.path) else {
+            guard let state = try loadPersistedStateFromDisk() else {
                 return
             }
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let state = try decoder.decode(PersistedState.self, from: data)
-            guardEnabled = state.guardEnabled
-            beacons = state.beacons.map(normalizeLoadedBeacon)
-            rules = state.rules
-            networkRules = state.networkRules
-            advanced = state.advanced
-            logs = state.logs
-            activePause = state.activePause
+            applyPersistedState(state, includeLogs: true)
         } catch {
             logs = [
                 EventLog(
@@ -1214,6 +1356,178 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
+    private func loadRuntimeMirror() {
+        do {
+            let url = FileLocations.runtimeStateFile
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                return
+            }
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let runtime = try decoder.decode(SharedRuntimeState.self, from: data)
+            applyRuntimeMirror(runtime)
+            lastRuntimeStateModifiedAt = modificationDate(for: url)
+        } catch {
+            unavailableReason = "读取后台运行状态失败：\(error.localizedDescription)"
+            traceDebug("读取 runtime.json 失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func syncPersistedStateIfNeeded() {
+        let url = FileLocations.stateFile
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+
+        let modifiedAt = modificationDate(for: url)
+        guard modifiedAt != lastPersistedStateModifiedAt else {
+            return
+        }
+
+        do {
+            guard let state = try loadPersistedStateFromDisk() else {
+                return
+            }
+            applyPersistedState(state, includeLogs: false)
+            applyConfigurationChanges()
+            tracePersistedStateIfNeeded(source: "state.json")
+        } catch {
+            unavailableReason = "同步配置失败：\(error.localizedDescription)"
+            traceDebug("同步 state.json 失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func syncRuntimeMirrorIfNeeded() {
+        guard shouldDeferBluetoothToBackgroundAgent else {
+            return
+        }
+
+        let url = FileLocations.runtimeStateFile
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+
+        let modifiedAt = modificationDate(for: url)
+        guard modifiedAt != lastRuntimeStateModifiedAt else {
+            return
+        }
+
+        loadRuntimeMirror()
+    }
+
+    private func processPendingAgentCommandIfNeeded() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
+        let url = FileLocations.agentCommandFile
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let command = try decoder.decode(AgentCommand.self, from: data)
+            guard command.id != lastProcessedAgentCommandID else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+
+            lastProcessedAgentCommandID = command.id
+            handleAgentCommand(command)
+            try? FileManager.default.removeItem(at: url)
+        } catch {
+            unavailableReason = "处理前台命令失败：\(error.localizedDescription)"
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func handleAgentCommand(_ command: AgentCommand) {
+        switch command.kind {
+        case .startManualScan:
+            startManualScanLocally(durationOverride: command.scanDurationSeconds)
+        case .stopManualScan:
+            stopManualScanLocally()
+        case .clearDevices:
+            clearDiscoveredDevicesLocally()
+        case .startStabilityTest:
+            guard let beaconID = command.beaconID,
+                  let beacon = beacons.first(where: { $0.id == beaconID })
+            else {
+                return
+            }
+            stabilitySession = StabilityTestSession(beaconID: beacon.id)
+            lastStabilityResult = nil
+            addLog(.stability, reason: "开始稳定性测试：\(beacon.displayName)", relatedBeacons: [beacon])
+        case .stopStabilityTest:
+            guard let session = stabilitySession else {
+                return
+            }
+            finishStabilityTest(session)
+        }
+    }
+
+    private func startManualScanLocally(durationOverride: Int? = nil) {
+        if guardEnabled {
+            scanner.startScanning()
+            addLog(.scan, reason: "守护已开启，保持持续蓝牙扫描")
+        } else {
+            let duration = max(5, durationOverride ?? advanced.discoveryScanDurationSeconds)
+            scanner.startScanning(duration: TimeInterval(duration))
+            addLog(.scan, reason: "用户启动蓝牙扫描：\(duration) 秒")
+        }
+    }
+
+    private func stopManualScanLocally() {
+        guard !guardEnabled else {
+            return
+        }
+        scanner.stopScanning()
+        addLog(.scan, reason: "用户暂停蓝牙扫描")
+    }
+
+    private func clearDiscoveredDevicesLocally() {
+        scanner.clearDevices()
+        addLog(.scan, reason: "清空扫描结果")
+    }
+
+    private func sendAgentCommand(
+        _ kind: AgentCommandKind,
+        scanDurationSeconds: Int? = nil,
+        beaconID: UUID? = nil
+    ) {
+        guard shouldDeferBluetoothToBackgroundAgent else {
+            return
+        }
+
+        traceDebug("前台发送命令到 Agent：kind=\(kind.rawValue)")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "前台发送命令 \(kind.rawValue)")
+
+        let command = AgentCommand(
+            kind: kind,
+            scanDurationSeconds: scanDurationSeconds,
+            beaconID: beaconID
+        )
+
+        do {
+            try FileManager.default.createDirectory(
+                at: FileLocations.applicationSupportDirectory,
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            let data = try encoder.encode(command)
+            try data.write(to: FileLocations.agentCommandFile, options: .atomic)
+        } catch {
+            unavailableReason = "发送后台命令失败：\(error.localizedDescription)"
+            traceDebug("写入 agent-command.json 失败：\(error.localizedDescription)")
+        }
+    }
+
     private func scheduleRuntimeSave() {
         runtimeSaveWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
@@ -1221,6 +1535,19 @@ final class AutoLockerStore: ObservableObject {
         }
         runtimeSaveWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+    }
+
+    private func scheduleRuntimeMirrorSave() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
+        runtimeMirrorSaveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.saveRuntimeMirror()
+        }
+        runtimeMirrorSaveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: item)
     }
 
     private func scheduleConfigurationCommit() {
@@ -1243,7 +1570,11 @@ final class AutoLockerStore: ObservableObject {
         }
 
         resetAbsenceCounters()
-        evaluateGuard(trigger: "配置变更后应用")
+        if ownsBluetoothScanning {
+            evaluateGuard(trigger: "配置变更后应用")
+        } else {
+            updatePassiveGuardStatus()
+        }
     }
 
     private func save(showFeedback: Bool = false, feedbackMessage: String? = nil) {
@@ -1254,7 +1585,9 @@ final class AutoLockerStore: ObservableObject {
             networkRules: networkRules,
             advanced: advanced,
             logs: logs,
-            activePause: activePause
+            activePause: activePause,
+            timerLockEnd: timerLockEnd,
+            timerLockDurationMinutes: timerLockDurationMinutes
         )
         let applicationSupportDirectory = FileLocations.applicationSupportDirectory
         let stateFile = FileLocations.stateFile
@@ -1270,8 +1603,10 @@ final class AutoLockerStore: ObservableObject {
                 encoder.dateEncodingStrategy = .iso8601
                 let data = try encoder.encode(state)
                 try data.write(to: stateFile, options: .atomic)
-                if showFeedback {
-                    DispatchQueue.main.async {
+                let modifiedAt = self?.modificationDate(for: stateFile)
+                DispatchQueue.main.async {
+                    self?.lastPersistedStateModifiedAt = modifiedAt
+                    if showFeedback {
                         self?.showSaveFeedback(feedbackMessage ?? "已保存")
                     }
                 }
@@ -1281,6 +1616,108 @@ final class AutoLockerStore: ObservableObject {
                 }
             }
         }
+    }
+
+    private func saveRuntimeMirror() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
+        let runtime = SharedRuntimeState(
+            updatedAt: Date(),
+            guardEnabled: guardEnabled,
+            status: status,
+            unavailableReason: unavailableReason,
+            activePause: activePause,
+            logs: logs,
+            promptReason: promptReason,
+            countdownRemaining: countdownRemaining,
+            timerLockEnd: timerLockEnd,
+            timerLockDurationMinutes: timerLockDurationMinutes,
+            lastStabilityResult: lastStabilityResult,
+            bluetooth: scanner.runtimeSnapshot
+        )
+
+        let applicationSupportDirectory = FileLocations.applicationSupportDirectory
+        let runtimeFile = FileLocations.runtimeStateFile
+
+        saveQueue.async { [weak self] in
+            do {
+                try FileManager.default.createDirectory(
+                    at: applicationSupportDirectory,
+                    withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(runtime)
+                try data.write(to: runtimeFile, options: .atomic)
+                let modifiedAt = self?.modificationDate(for: runtimeFile)
+                DispatchQueue.main.async {
+                    self?.lastRuntimeStateModifiedAt = modifiedAt
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.unavailableReason = "保存后台运行状态失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func loadPersistedStateFromDisk() throws -> PersistedState? {
+        let url = FileLocations.stateFile
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let state = try decoder.decode(PersistedState.self, from: data)
+        lastPersistedStateModifiedAt = modificationDate(for: url)
+        return state
+    }
+
+    private func applyPersistedState(_ state: PersistedState, includeLogs: Bool) {
+        isApplyingExternalState = true
+        defer { isApplyingExternalState = false }
+
+        guardEnabled = state.guardEnabled
+        beacons = state.beacons.map(normalizeLoadedBeacon)
+        rules = state.rules
+        networkRules = state.networkRules
+        advanced = state.advanced
+        activePause = state.activePause
+        timerLockEnd = state.timerLockEnd
+        timerLockDurationMinutes = state.timerLockDurationMinutes
+
+        if includeLogs {
+            logs = state.logs
+        }
+    }
+
+    private func applyRuntimeMirror(_ runtime: SharedRuntimeState) {
+        guard shouldDeferBluetoothToBackgroundAgent else {
+            return
+        }
+
+        isApplyingExternalState = true
+        defer { isApplyingExternalState = false }
+
+        lastRuntimeHeartbeatAt = runtime.updatedAt
+        status = runtime.status
+        unavailableReason = runtime.unavailableReason
+        logs = runtime.logs
+        promptReason = runtime.promptReason
+        countdownRemaining = runtime.countdownRemaining
+        lastStabilityResult = runtime.lastStabilityResult
+        scanner.applyRuntimeSnapshot(runtime.bluetooth)
+        traceRuntimeStateIfNeeded(runtime)
+    }
+
+    private func modificationDate(for url: URL) -> Date? {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes?[.modificationDate] as? Date
     }
 
     private func showSaveFeedback(_ message: String) {
@@ -1294,7 +1731,66 @@ final class AutoLockerStore: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: item)
     }
 
+    private func traceDebug(_ message: String) {
+        SharedDebugTrace.log(message)
+    }
+
+    private func tracePersistedStateIfNeeded(source: String) {
+        let signature = [
+            "enabled=\(guardEnabled)",
+            "pause=\(pauseTraceValue(activePause))",
+            "timer=\(timerTraceValue(timerLockEnd))",
+            "duration=\(timerLockDurationMinutes)",
+            "beacons=\(beacons.count)"
+        ].joined(separator: " ")
+
+        guard signature != lastTracedPersistedSignature else {
+            return
+        }
+
+        lastTracedPersistedSignature = signature
+        traceDebug("同步持久化状态 <- \(source)：\(signature)")
+    }
+
+    private func traceRuntimeStateIfNeeded(_ runtime: SharedRuntimeState) {
+        let signature = [
+            "status=\(runtime.status.rawValue)",
+            "reason=\(runtime.unavailableReason ?? "-")",
+            "bt=\(runtime.bluetooth.powerState.rawValue)",
+            "scan=\(runtime.bluetooth.isScanning)",
+            "devices=\(runtime.bluetooth.devices.count)"
+        ].joined(separator: " ")
+
+        guard signature != lastTracedRuntimeSignature else {
+            return
+        }
+
+        lastTracedRuntimeSignature = signature
+        traceDebug("同步运行镜像 <- runtime.json：\(signature) updatedAt=\(runtime.updatedAt.ISO8601Format())")
+    }
+
+    private func pauseTraceValue(_ pause: ActivePause?) -> String {
+        guard let pause else {
+            return "nil"
+        }
+        if let until = pause.until {
+            return "\(pause.mode.rawValue)@\(until.ISO8601Format())"
+        }
+        return pause.mode.rawValue
+    }
+
+    private func timerTraceValue(_ date: Date?) -> String {
+        guard let date else {
+            return "nil"
+        }
+        return date.ISO8601Format()
+    }
+
     @objc private func handleSessionBecameActive() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
         if activePause?.mode == .nextUnlock {
             resumeGuard(reason: "检测到用户解锁，自动恢复守护")
         }
@@ -1305,6 +1801,10 @@ final class AutoLockerStore: ObservableObject {
     }
 
     @objc private func handleSessionBecameInactive() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
         guard guardEnabled else {
             return
         }
@@ -1322,6 +1822,10 @@ final class AutoLockerStore: ObservableObject {
     }
 
     @objc private func handleSystemDidWake() {
+        guard ownsBluetoothScanning else {
+            return
+        }
+
         recoverGuardScanningAfterSystemInterruption(reason: "系统唤醒后恢复蓝牙扫描")
     }
 

@@ -3,25 +3,21 @@ import SwiftUI
 
 #if !BACKGROUND_AGENT
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var shouldLaunchBackgroundAgentOnTerminate = false
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationController.requestAuthorization()
         AppLauncher.registerBackgroundAgentIfPossible()
-        AppLauncher.terminateRunningAgentIfNeeded()
+        SharedDebugTrace.log("主应用启动完成")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "主应用启动")
         NSApp.setActivationPolicy(.regular)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        shouldLaunchBackgroundAgentOnTerminate = true
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        guard shouldLaunchBackgroundAgentOnTerminate else {
-            return
-        }
-        AppLauncher.launchBackgroundAgentIfNeeded()
+        SharedDebugTrace.log("主应用即将退出，尝试交接后台 Agent")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "主应用退出交接")
     }
 }
 

@@ -20,38 +20,10 @@ struct MenuBarView: View {
                 store.setGuardEnabled(!store.guardEnabled)
             }
 
-            Menu("暂停") {
-                Button("15 分钟") { store.pause(.fifteenMinutes) }
-                Button("30 分钟") { store.pause(.thirtyMinutes) }
-                Button("1 小时") { store.pause(.oneHour) }
-                Divider()
-                Button("直到手动恢复") { store.pause(.manual) }
-                Button("下次解锁后恢复") { store.pause(.nextUnlock) }
-                Button("离开当前 Wi-Fi 后恢复") { store.pause(.wifiLeaves) }
-                Button("今天结束前") { store.pause(.endOfDay) }
-                Button("自定义时间点...") {
-                    openMainWindow(section: .overview)
-                }
-            }
-            .disabled(!store.guardEnabled)
-
             Button("恢复守护") {
                 store.resumeGuard()
             }
             .disabled(store.activePause == nil)
-
-            Divider()
-
-            Menu("绑定信标状态") {
-                if store.beacons.isEmpty {
-                    Text("尚未绑定信标")
-                } else {
-                    ForEach(store.beacons.prefix(8)) { beacon in
-                        let value = beacon.lastRSSI.map { "\($0) dBm" } ?? "未检测到"
-                        Text("\(beacon.displayName): \(value)")
-                    }
-                }
-            }
 
             Divider()
 

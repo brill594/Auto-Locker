@@ -5,6 +5,7 @@ import SwiftUI
 final class AgentAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationController.requestAuthorization()
+        SharedDebugTrace.log("后台 Agent 启动完成")
         NSApp.setActivationPolicy(.accessory)
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import CoreBluetooth
 import Foundation
@@ -14,7 +15,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
     var onDevicesChanged: (() -> Void)?
     var onStateChanged: (() -> Void)?
 
-    private var central: CBCentralManager!
+    private var central: CBCentralManager?
     private var shouldScanWhenReady = false
     private var pendingScanDuration: TimeInterval?
     private var scanTimer: Timer?
@@ -22,15 +23,23 @@ final class BluetoothScanner: NSObject, ObservableObject {
     private var pendingDevicesChangeNotify = false
     private var lastDevicesChangeNotifyAt = Date.distantPast
     private let devicesChangeNotifyInterval: TimeInterval = 0.25
+    private var centralCreationScheduled = false
+    private var shouldRetryAuthorizationAfterActivation = false
 
     override init() {
         super.init()
-        central = CBCentralManager(delegate: self, queue: .main)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleApplicationDidBecomeActive),
+            name: NSApplication.didBecomeActiveNotification,
+            object: nil
+        )
     }
 
     deinit {
         scanTimer?.invalidate()
         devicesChangeNotifyTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
     }
 
     var scanStatusText: String {
@@ -43,15 +52,46 @@ final class BluetoothScanner: NSObject, ObservableObject {
         return "扫描已暂停"
     }
 
+    var runtimeSnapshot: BluetoothRuntimeSnapshot {
+        BluetoothRuntimeSnapshot(
+            powerState: powerState,
+            isScanning: isScanning,
+            scanStartedAt: scanStartedAt,
+            scanEndsAt: scanEndsAt,
+            scanRemainingSeconds: scanRemainingSeconds,
+            lastError: lastError,
+            devices: devices
+        )
+    }
+
+    func applyRuntimeSnapshot(_ snapshot: BluetoothRuntimeSnapshot) {
+        shouldScanWhenReady = false
+        pendingScanDuration = nil
+        scanTimer?.invalidate()
+        scanTimer = nil
+        devicesChangeNotifyTimer?.invalidate()
+        devicesChangeNotifyTimer = nil
+        pendingDevicesChangeNotify = false
+
+        devices = snapshot.devices
+        powerState = snapshot.powerState
+        isScanning = snapshot.isScanning
+        scanStartedAt = snapshot.scanStartedAt
+        scanEndsAt = snapshot.scanEndsAt
+        scanRemainingSeconds = snapshot.scanRemainingSeconds
+        lastError = snapshot.lastError
+    }
+
     func startScanning(duration: TimeInterval? = nil) {
         shouldScanWhenReady = true
         pendingScanDuration = duration
+        ensureCentralManagerReady()
         guard powerState == .poweredOn else {
             return
         }
         if !isScanning {
             compactLikelyDuplicateDevices()
-            central.scanForPeripherals(
+            central?.scanForPeripherals(
                 withServices: nil,
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
             )
@@ -65,16 +105,17 @@ final class BluetoothScanner: NSObject, ObservableObject {
     func restartScanning(duration: TimeInterval? = nil) {
         shouldScanWhenReady = true
         pendingScanDuration = duration
+        ensureCentralManagerReady()
         guard powerState == .poweredOn else {
             return
         }
 
         if isScanning {
-            central.stopScan()
+            central?.stopScan()
             isScanning = false
         }
         compactLikelyDuplicateDevices()
-        central.scanForPeripherals(
+        central?.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
@@ -94,7 +135,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
         scanRemainingSeconds = 0
         let shouldFlushDeviceUpdate = isScanning || pendingDevicesChangeNotify
         if isScanning {
-            central.stopScan()
+            central?.stopScan()
             isScanning = false
         }
         if shouldFlushDeviceUpdate {
@@ -115,6 +156,39 @@ final class BluetoothScanner: NSObject, ObservableObject {
 }
 
 private extension BluetoothScanner {
+    func ensureCentralManagerReady(forceRecreate: Bool = false) {
+        if forceRecreate {
+            central?.delegate = nil
+            central = nil
+            powerState = .unknown
+        }
+
+        guard central == nil, !centralCreationScheduled else {
+            return
+        }
+
+        centralCreationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            self.centralCreationScheduled = false
+            guard self.central == nil else {
+                return
+            }
+            self.central = CBCentralManager(delegate: self, queue: .main)
+        }
+    }
+
+    @objc func handleApplicationDidBecomeActive() {
+        guard shouldRetryAuthorizationAfterActivation else {
+            return
+        }
+
+        shouldRetryAuthorizationAfterActivation = false
+        ensureCentralManagerReady(forceRecreate: true)
+    }
+
     func configureScanTimer(duration: TimeInterval?) {
         scanTimer?.invalidate()
         scanTimer = nil
@@ -216,8 +290,21 @@ extension BluetoothScanner: CBCentralManagerDelegate {
             powerState = .unsupported
             lastError = "这台 Mac 不支持当前蓝牙扫描能力。"
         case .unauthorized:
-            powerState = .unauthorized
-            lastError = "蓝牙权限未授权，请在系统设置中允许 Auto Locker 使用蓝牙。"
+            switch CBCentralManager.authorization {
+            case .notDetermined:
+                powerState = .unknown
+                lastError = "正在等待系统蓝牙权限确认。"
+                shouldRetryAuthorizationAfterActivation = true
+            case .restricted, .denied:
+                powerState = .unauthorized
+                lastError = "蓝牙权限未授权，请在系统设置中允许 Auto Locker 使用蓝牙。"
+            case .allowedAlways:
+                powerState = .unknown
+                lastError = nil
+            @unknown default:
+                powerState = .unauthorized
+                lastError = "蓝牙权限未授权，请在系统设置中允许 Auto Locker 使用蓝牙。"
+            }
         case .poweredOff:
             powerState = .poweredOff
             lastError = "蓝牙已关闭。"
