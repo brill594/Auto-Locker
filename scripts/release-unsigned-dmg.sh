@@ -36,7 +36,8 @@ require_tool hdiutil
 cat >&2 <<'EOF'
 WARNING: this script creates an unsigned build for quick UI checks only.
 TCC permissions such as Bluetooth/Input Monitoring are tied to code-signing identity;
-use scripts/release-dmg.sh with a Developer ID Team ID for permission debugging.
+use SIGNING_MODE=development TEAM_ID=YOUR_TEAM_ID SKIP_NOTARIZATION=1 scripts/release-dmg.sh
+for Personal Team permission debugging.
 EOF
 
 mkdir -p "$DIST_DIR"

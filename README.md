@@ -109,6 +109,22 @@ scripts/release-dmg.sh
 dist/AutoLocker.dmg
 ```
 
+如果只有 Xcode Personal Team，不能进行 Developer ID 公证发布，但可以构建一个本机开发签名 DMG，用于权限/TCC 调试：
+
+```sh
+SIGNING_MODE=development \
+TEAM_ID=YOUR_PERSONAL_TEAM_ID \
+SKIP_NOTARIZATION=1 \
+ALLOW_PROVISIONING_UPDATES=1 \
+scripts/release-dmg.sh
+```
+
+输出文件默认位于：
+
+```text
+dist/AutoLocker-development.dmg
+```
+
 ## 运行说明
 
 - 首次运行时，macOS 会请求蓝牙权限。

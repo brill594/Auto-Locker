@@ -111,6 +111,22 @@ The output file is:
 dist/AutoLocker.dmg
 ```
 
+If you only have an Xcode Personal Team, you cannot create a notarized Developer ID release, but you can build a locally development-signed DMG for permissions/TCC debugging:
+
+```sh
+SIGNING_MODE=development \
+TEAM_ID=YOUR_PERSONAL_TEAM_ID \
+SKIP_NOTARIZATION=1 \
+ALLOW_PROVISIONING_UPDATES=1 \
+scripts/release-dmg.sh
+```
+
+The output file is:
+
+```text
+dist/AutoLocker-development.dmg
+```
+
 ## Runtime Notes
 
 - On first launch, macOS asks for Bluetooth permission.
