@@ -116,8 +116,10 @@ struct NetworkRulesView: View {
             .padding(24)
         }
         .onAppear {
-            store.refreshNetworkContext()
-            store.requestLocationPermissionIfNeeded()
+            DispatchQueue.main.async {
+                store.refreshNetworkContext()
+                store.requestLocationPermissionIfNeeded()
+            }
         }
     }
 

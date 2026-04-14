@@ -1,6 +1,7 @@
 import AppKit
 import CoreLocation
 import CoreWLAN
+import Darwin
 import Foundation
 import Security
 import ServiceManagement
@@ -23,6 +24,7 @@ enum AppLauncher {
     static let mainBundleIdentifier = "com.brilliant.autolocker"
     static let agentBundleIdentifier = "com.brilliant.autolocker.agent"
     private static let legacyAgentBundleIdentifiers = ["com.brilliant.AutoLocker.Agent"]
+    private static var pendingAgentLaunchUntil: Date?
 
     static var hasBundledBackgroundAgent: Bool {
         bundledAgentURL != nil
@@ -35,7 +37,22 @@ enum AppLauncher {
 
         if #available(macOS 13.0, *) {
             do {
-                try SMAppService.loginItem(identifier: agentBundleIdentifier).register()
+                let service = SMAppService.loginItem(identifier: agentBundleIdentifier)
+                switch service.status {
+                case .enabled:
+                    SharedDebugTrace.log("登录项 Agent 已注册")
+                    return
+                case .requiresApproval:
+                    SharedDebugTrace.log("登录项 Agent 等待系统设置批准")
+                    return
+                case .notFound:
+                    SharedDebugTrace.log("跳过注册登录项 Agent：系统未找到内嵌登录项")
+                    return
+                default:
+                    break
+                }
+
+                try service.register()
                 SharedDebugTrace.log("已注册登录项 Agent")
             } catch {
                 SharedDebugTrace.log("注册登录项 Agent 失败：\(error.localizedDescription)")
@@ -58,20 +75,27 @@ enum AppLauncher {
         }
     }
 
-    static func isBackgroundAgentRunning() -> Bool {
-        knownAgentBundleIdentifiers.contains { identifier in
-            let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
-            return runningAgents.contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
-        }
+    static func launchBackgroundAgentIfNeeded(reason: String = "未提供原因", completion: ((Bool) -> Void)? = nil) {
+        launchBackgroundAgentIfNeeded(
+            reason: reason,
+            completion: completion,
+            canRetryAfterStaleAgentCleanup: true
+        )
     }
 
-    static func launchBackgroundAgentIfNeeded(reason: String = "未提供原因") {
+    private static func launchBackgroundAgentIfNeeded(
+        reason: String,
+        completion: ((Bool) -> Void)?,
+        canRetryAfterStaleAgentCleanup: Bool
+    ) {
         guard AutoLockerProcessContext.currentMode == .foregroundApp else {
+            completion?(false)
             return
         }
 
         guard let agentURL = bundledAgentURL else {
             SharedDebugTrace.log("跳过拉起 Agent：未找到内嵌 Agent，原因=\(reason)")
+            completion?(false)
             return
         }
 
@@ -83,23 +107,90 @@ enum AppLauncher {
             }
         }
 
+        if let pendingAgentLaunchUntil, pendingAgentLaunchUntil > Date() {
+            SharedDebugTrace.log("跳过拉起 Agent：已有启动请求等待完成，原因=\(reason)")
+            completion?(true)
+            return
+        }
+
+        if AgentProcessLock.isHeldByAnotherProcess() {
+            SharedDebugTrace.log("跳过拉起 Agent：进程锁已被持有，原因=\(reason)")
+            completion?(true)
+            return
+        }
+
         let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
         guard runningAgents.isEmpty else {
-            SharedDebugTrace.log("跳过拉起 Agent：已在运行，原因=\(reason)")
+            guard canRetryAfterStaleAgentCleanup else {
+                SharedDebugTrace.log("拉起 Agent 失败：旧 Agent 尚未退出，原因=\(reason)")
+                completion?(false)
+                return
+            }
+
+            for app in runningAgents {
+                SharedDebugTrace.log("终止未持有进程锁的旧 Agent：pid=\(app.processIdentifier)，原因=\(reason)")
+                app.terminate()
+            }
+
+            pendingAgentLaunchUntil = Date().addingTimeInterval(1)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                pendingAgentLaunchUntil = nil
+                launchBackgroundAgentIfNeeded(
+                    reason: "\(reason)（清理旧 Agent 后重试）",
+                    completion: completion,
+                    canRetryAfterStaleAgentCleanup: false
+                )
+            }
             return
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false
+        pendingAgentLaunchUntil = Date().addingTimeInterval(3)
         SharedDebugTrace.log("开始拉起 Agent，原因=\(reason)")
         NSWorkspace.shared.openApplication(at: agentURL, configuration: configuration) { _, error in
             if let error {
+                pendingAgentLaunchUntil = nil
                 SharedDebugTrace.log("拉起 Agent 失败：\(error.localizedDescription)，原因=\(reason)")
                 NSLog("AutoLocker: failed to launch background agent: \(error.localizedDescription)")
+                completion?(false)
             } else {
                 SharedDebugTrace.log("拉起 Agent 请求已提交，原因=\(reason)")
+                completion?(true)
             }
         }
+    }
+
+    static func quitAllFromMenuBar() {
+        switch AutoLockerProcessContext.currentMode {
+        case .foregroundApp:
+            NSApp.terminate(nil)
+        case .backgroundAgent:
+            storeFullQuitRequest()
+            terminateRunningMainAppIfNeeded(reason: "菜单栏退出 Auto Locker")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    static func consumeFullQuitRequestIfNeeded(maxAge: TimeInterval = 10) -> Bool {
+        let url = FileLocations.fullQuitRequestFile
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return false
+        }
+
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let requestedAt = ISO8601DateFormatter().date(from: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        else {
+            return false
+        }
+
+        return abs(requestedAt.timeIntervalSinceNow) <= maxAge
     }
 
     static func openMainApp(section: AppSection = .overview) {
@@ -162,6 +253,14 @@ enum AppLauncher {
         [agentBundleIdentifier] + legacyAgentBundleIdentifiers
     }
 
+    private static func terminateRunningMainAppIfNeeded(reason: String) {
+        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: mainBundleIdentifier)
+        for app in runningApps where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            SharedDebugTrace.log("终止主应用进程 pid=\(app.processIdentifier)，原因=\(reason)")
+            app.terminate()
+        }
+    }
+
     private static var mainAppURL: URL? {
         switch AutoLockerProcessContext.currentMode {
         case .foregroundApp:
@@ -187,6 +286,97 @@ enum AppLauncher {
         } catch {
             NSLog("AutoLocker: failed to store pending main app section: \(error.localizedDescription)")
         }
+    }
+
+    private static func storeFullQuitRequest() {
+        let directory = FileLocations.applicationSupportDirectory
+        let requestFile = FileLocations.fullQuitRequestFile
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+            try timestamp.write(to: requestFile, atomically: true, encoding: .utf8)
+            SharedDebugTrace.log("已写入全量退出请求")
+        } catch {
+            SharedDebugTrace.log("写入全量退出请求失败：\(error.localizedDescription)")
+        }
+    }
+}
+
+enum AgentProcessLock {
+    private static var lockHandle: FileHandle?
+
+    static var isHeldByCurrentProcess: Bool {
+        lockHandle != nil
+    }
+
+    static func acquireForCurrentAgent() -> Bool {
+        guard AutoLockerProcessContext.currentMode == .backgroundAgent else {
+            return false
+        }
+
+        if lockHandle != nil {
+            return true
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: FileLocations.applicationSupportDirectory,
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(atPath: FileLocations.agentProcessLockFile.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: FileLocations.agentProcessLockFile)
+            guard flock(handle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+                try? handle.close()
+                SharedDebugTrace.log("Agent 进程锁已被占用，当前进程退出")
+                return false
+            }
+
+            try? handle.truncate(atOffset: 0)
+            if let data = "\(ProcessInfo.processInfo.processIdentifier)\n".data(using: .utf8) {
+                try? handle.write(contentsOf: data)
+            }
+            lockHandle = handle
+            SharedDebugTrace.log("Agent 进程锁已获取")
+            return true
+        } catch {
+            SharedDebugTrace.log("获取 Agent 进程锁失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    static func isHeldByAnotherProcess() -> Bool {
+        do {
+            try FileManager.default.createDirectory(
+                at: FileLocations.applicationSupportDirectory,
+                withIntermediateDirectories: true
+            )
+            FileManager.default.createFile(atPath: FileLocations.agentProcessLockFile.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: FileLocations.agentProcessLockFile)
+            defer {
+                try? handle.close()
+            }
+
+            guard flock(handle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
+                return true
+            }
+            flock(handle.fileDescriptor, LOCK_UN)
+            return false
+        } catch {
+            SharedDebugTrace.log("检查 Agent 进程锁失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    static func release() {
+        guard let handle = lockHandle else {
+            return
+        }
+
+        flock(handle.fileDescriptor, LOCK_UN)
+        try? handle.close()
+        lockHandle = nil
+        SharedDebugTrace.log("Agent 进程锁已释放")
     }
 }
 
@@ -366,6 +556,34 @@ enum SharedDebugTrace {
             return try String(contentsOf: url, encoding: .utf8)
         }
     }
+
+    static func readRecent(maxBytes: Int) throws -> String {
+        try queue.sync {
+            let url = FileLocations.debugTraceFile
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                return ""
+            }
+
+            let handle = try FileHandle(forReadingFrom: url)
+            defer {
+                try? handle.close()
+            }
+
+            let size = try handle.seekToEnd()
+            let byteLimit = UInt64(max(1, maxBytes))
+            let offset = size > byteLimit ? size - byteLimit : 0
+            try handle.seek(toOffset: offset)
+            let data = try handle.readToEnd() ?? Data()
+            var text = String(decoding: data, as: UTF8.self)
+            if offset > 0 {
+                if let newline = text.firstIndex(of: "\n") {
+                    text.removeSubrange(...newline)
+                }
+                text = "仅显示最近 \(maxBytes / 1024) KB 调试日志。\n\n" + text
+            }
+            return text
+        }
+    }
 }
 
 enum CodeSigningDiagnostics {
@@ -446,6 +664,14 @@ enum FileLocations {
 
     static var mainAppLaunchRequestFile: URL {
         applicationSupportDirectory.appendingPathComponent("launch-request.txt")
+    }
+
+    static var fullQuitRequestFile: URL {
+        applicationSupportDirectory.appendingPathComponent("full-quit-request.txt")
+    }
+
+    static var agentProcessLockFile: URL {
+        applicationSupportDirectory.appendingPathComponent("agent.lock")
     }
 
     static var debugTraceFile: URL {

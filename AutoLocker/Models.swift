@@ -81,7 +81,7 @@ enum BluetoothPowerState: String, Codable {
     }
 }
 
-enum LocationAuthorizationState: String {
+enum LocationAuthorizationState: String, Codable {
     case notDetermined
     case restricted
     case denied
@@ -1005,6 +1005,12 @@ struct BluetoothRuntimeSnapshot: Codable, Equatable {
     var devices: [DiscoveredDevice] = []
 }
 
+struct NetworkRuntimeSnapshot: Codable, Equatable {
+    var currentSSID: String?
+    var currentBSSID: String?
+    var locationAuthorizationState: LocationAuthorizationState = .notDetermined
+}
+
 struct SharedRuntimeState: Codable {
     var updatedAt: Date
     var guardEnabled: Bool
@@ -1018,6 +1024,70 @@ struct SharedRuntimeState: Codable {
     var timerLockDurationMinutes: Int
     var lastStabilityResult: StabilityTestResult?
     var bluetooth: BluetoothRuntimeSnapshot
+    var network: NetworkRuntimeSnapshot
+
+    init(
+        updatedAt: Date,
+        guardEnabled: Bool,
+        status: GuardRuntimeState,
+        unavailableReason: String?,
+        activePause: ActivePause?,
+        logs: [EventLog],
+        promptReason: String,
+        countdownRemaining: Int,
+        timerLockEnd: Date?,
+        timerLockDurationMinutes: Int,
+        lastStabilityResult: StabilityTestResult?,
+        bluetooth: BluetoothRuntimeSnapshot,
+        network: NetworkRuntimeSnapshot = NetworkRuntimeSnapshot()
+    ) {
+        self.updatedAt = updatedAt
+        self.guardEnabled = guardEnabled
+        self.status = status
+        self.unavailableReason = unavailableReason
+        self.activePause = activePause
+        self.logs = logs
+        self.promptReason = promptReason
+        self.countdownRemaining = countdownRemaining
+        self.timerLockEnd = timerLockEnd
+        self.timerLockDurationMinutes = timerLockDurationMinutes
+        self.lastStabilityResult = lastStabilityResult
+        self.bluetooth = bluetooth
+        self.network = network
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case updatedAt
+        case guardEnabled
+        case status
+        case unavailableReason
+        case activePause
+        case logs
+        case promptReason
+        case countdownRemaining
+        case timerLockEnd
+        case timerLockDurationMinutes
+        case lastStabilityResult
+        case bluetooth
+        case network
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        guardEnabled = try container.decode(Bool.self, forKey: .guardEnabled)
+        status = try container.decode(GuardRuntimeState.self, forKey: .status)
+        unavailableReason = try container.decodeIfPresent(String.self, forKey: .unavailableReason)
+        activePause = try container.decodeIfPresent(ActivePause.self, forKey: .activePause)
+        logs = try container.decode([EventLog].self, forKey: .logs)
+        promptReason = try container.decode(String.self, forKey: .promptReason)
+        countdownRemaining = try container.decode(Int.self, forKey: .countdownRemaining)
+        timerLockEnd = try container.decodeIfPresent(Date.self, forKey: .timerLockEnd)
+        timerLockDurationMinutes = try container.decode(Int.self, forKey: .timerLockDurationMinutes)
+        lastStabilityResult = try container.decodeIfPresent(StabilityTestResult.self, forKey: .lastStabilityResult)
+        bluetooth = try container.decode(BluetoothRuntimeSnapshot.self, forKey: .bluetooth)
+        network = try container.decodeIfPresent(NetworkRuntimeSnapshot.self, forKey: .network) ?? NetworkRuntimeSnapshot()
+    }
 }
 
 enum AgentCommandKind: String, Codable {
@@ -1027,6 +1097,7 @@ enum AgentCommandKind: String, Codable {
     case startStabilityTest
     case stopStabilityTest
     case debugBluetoothAvailability
+    case requestLocationPermission
 }
 
 struct AgentCommand: Codable {

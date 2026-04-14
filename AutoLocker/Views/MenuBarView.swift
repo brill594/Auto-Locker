@@ -38,7 +38,7 @@ struct MenuBarView: View {
             Divider()
 
             Button("退出 Auto Locker") {
-                NSApp.terminate(nil)
+                AppLauncher.quitAllFromMenuBar()
             }
         }
     }

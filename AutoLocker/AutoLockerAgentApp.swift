@@ -4,6 +4,12 @@ import SwiftUI
 #if BACKGROUND_AGENT
 final class AgentAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard AgentProcessLock.isHeldByCurrentProcess || AgentProcessLock.acquireForCurrentAgent() else {
+            SharedDebugTrace.log("后台 Agent 未持有进程锁，退出")
+            NSApp.terminate(nil)
+            return
+        }
+
         NotificationController.requestAuthorization()
         SharedDebugTrace.log("后台 Agent 启动完成")
         SharedDebugTrace.log("代码签名诊断：\(CodeSigningDiagnostics.debugSummary())")
@@ -12,6 +18,10 @@ final class AgentAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AgentProcessLock.release()
     }
 }
 

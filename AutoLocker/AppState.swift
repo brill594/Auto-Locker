@@ -22,8 +22,8 @@ final class AutoLockerStore: ObservableObject {
     @Published var saveFeedbackMessage: String?
 
     let scanner = BluetoothScanner()
-    let wifiMonitor = WiFiMonitor()
-    let locationPermissionMonitor = LocationPermissionMonitor()
+    private lazy var wifiMonitor = WiFiMonitor()
+    private lazy var locationPermissionMonitor = LocationPermissionMonitor()
 
     private let promptPresenter = PromptPresenter()
     private var cancellables: Set<AnyCancellable> = []
@@ -50,14 +50,28 @@ final class AutoLockerStore: ObservableObject {
     private var lastRuntimeHeartbeatAt: Date?
     private var lastTracedPersistedSignature: String?
     private var lastTracedRuntimeSignature: String?
+    @Published private var runtimeNetworkSnapshot = NetworkRuntimeSnapshot()
+    private let ownsRuntimeServicesForProcess: Bool
 
     init() {
+        ownsRuntimeServicesForProcess = AutoLockerProcessContext.currentMode == .backgroundAgent
+            && AgentProcessLock.acquireForCurrentAgent()
+
+        if AutoLockerProcessContext.currentMode == .backgroundAgent && !ownsRuntimeServicesForProcess {
+            DispatchQueue.main.async {
+                NSApp.terminate(nil)
+            }
+            return
+        }
+
         load()
         configureCallbacks()
         configureAutosave()
         configureSystemObservers()
-        locationPermissionMonitor.start()
-        wifiMonitor.start()
+        if ownsRuntimeServices {
+            locationPermissionMonitor.start()
+            wifiMonitor.start()
+        }
         startEvaluationTimer()
 
         if shouldDeferBluetoothToBackgroundAgent {
@@ -90,16 +104,20 @@ final class AutoLockerStore: ObservableObject {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
+    private var ownsRuntimeServices: Bool {
+        ownsRuntimeServicesForProcess
+    }
+
     private var ownsBluetoothScanning: Bool {
-        AutoLockerProcessContext.currentMode == .backgroundAgent
+        ownsRuntimeServices
     }
 
     var currentSSID: String? {
-        wifiMonitor.currentSSID
+        ownsRuntimeServices ? wifiMonitor.currentSSID : runtimeNetworkSnapshot.currentSSID
     }
 
     var locationAuthorizationState: LocationAuthorizationState {
-        locationPermissionMonitor.authorizationState
+        ownsRuntimeServices ? locationPermissionMonitor.authorizationState : runtimeNetworkSnapshot.locationAuthorizationState
     }
 
     var locationAuthorizationLabel: String {
@@ -111,7 +129,7 @@ final class AutoLockerStore: ObservableObject {
     }
 
     var currentBSSID: String? {
-        wifiMonitor.currentBSSID
+        ownsRuntimeServices ? wifiMonitor.currentBSSID : runtimeNetworkSnapshot.currentBSSID
     }
 
     var currentWiFiDisplay: String? {
@@ -319,14 +337,35 @@ final class AutoLockerStore: ObservableObject {
     }
 
     func requestLocationPermissionIfNeeded() {
+        guard ownsRuntimeServices else {
+            guard locationAuthorizationState == .notDetermined else {
+                return
+            }
+            sendAgentCommand(.requestLocationPermission)
+            return
+        }
+
         locationPermissionMonitor.requestAuthorizationIfNeeded()
     }
 
     func requestLocationPermission() {
+        guard ownsRuntimeServices else {
+            sendAgentCommand(.requestLocationPermission)
+            return
+        }
+
         locationPermissionMonitor.requestAuthorization()
     }
 
     func refreshNetworkContext() {
+        guard ownsRuntimeServices else {
+            AppLauncher.launchBackgroundAgentIfNeeded(reason: "刷新网络状态")
+            DispatchQueue.main.async { [weak self] in
+                self?.syncRuntimeMirrorIfNeeded()
+            }
+            return
+        }
+
         locationPermissionMonitor.refresh()
         wifiMonitor.refresh()
         objectWillChange.send()
@@ -472,9 +511,9 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
-    func readDebugTraceText() -> String {
+    func readDebugTraceText(maxBytes: Int = 120_000) -> String {
         do {
-            let text = try SharedDebugTrace.readAll()
+            let text = try SharedDebugTrace.readRecent(maxBytes: maxBytes)
             return text.isEmpty ? "暂无调试日志。" : text
         } catch {
             return "读取调试日志失败：\(error.localizedDescription)"
@@ -765,6 +804,10 @@ final class AutoLockerStore: ObservableObject {
             }
         }
 
+        guard ownsRuntimeServices else {
+            return
+        }
+
         Publishers.CombineLatest(
             wifiMonitor.$currentSSID.removeDuplicates(),
             wifiMonitor.$currentBSSID.removeDuplicates()
@@ -864,7 +907,10 @@ final class AutoLockerStore: ObservableObject {
     }
 
     private func tick() {
-        wifiMonitor.refresh()
+        if ownsRuntimeServices {
+            wifiMonitor.refresh()
+        }
+
         if shouldDeferBluetoothToBackgroundAgent {
             syncPersistedStateIfNeeded()
             syncRuntimeMirrorIfNeeded()
@@ -1489,6 +1535,8 @@ final class AutoLockerStore: ObservableObject {
             finishStabilityTest(session)
         case .debugBluetoothAvailability:
             runBluetoothAvailabilityDebugLocally()
+        case .requestLocationPermission:
+            locationPermissionMonitor.requestAuthorization()
         }
     }
 
@@ -1674,7 +1722,12 @@ final class AutoLockerStore: ObservableObject {
             timerLockEnd: timerLockEnd,
             timerLockDurationMinutes: timerLockDurationMinutes,
             lastStabilityResult: lastStabilityResult,
-            bluetooth: scanner.runtimeSnapshot
+            bluetooth: scanner.runtimeSnapshot,
+            network: NetworkRuntimeSnapshot(
+                currentSSID: wifiMonitor.currentSSID,
+                currentBSSID: wifiMonitor.currentBSSID,
+                locationAuthorizationState: locationPermissionMonitor.authorizationState
+            )
         )
 
         let applicationSupportDirectory = FileLocations.applicationSupportDirectory
@@ -1751,6 +1804,7 @@ final class AutoLockerStore: ObservableObject {
         countdownRemaining = runtime.countdownRemaining
         lastStabilityResult = runtime.lastStabilityResult
         scanner.applyRuntimeSnapshot(runtime.bluetooth)
+        runtimeNetworkSnapshot = runtime.network
         traceRuntimeStateIfNeeded(runtime)
     }
 
@@ -1797,7 +1851,9 @@ final class AutoLockerStore: ObservableObject {
             "reason=\(runtime.unavailableReason ?? "-")",
             "bt=\(runtime.bluetooth.powerState.rawValue)",
             "scan=\(runtime.bluetooth.isScanning)",
-            "devices=\(runtime.bluetooth.devices.count)"
+            "devices=\(runtime.bluetooth.devices.count)",
+            "wifi=\(runtime.network.currentSSID ?? runtime.network.currentBSSID ?? "-")",
+            "loc=\(runtime.network.locationAuthorizationState.rawValue)"
         ].joined(separator: " ")
 
         guard signature != lastTracedRuntimeSignature else {

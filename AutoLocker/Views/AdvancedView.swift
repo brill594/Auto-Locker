@@ -5,8 +5,10 @@ struct AdvancedView: View {
     @EnvironmentObject private var store: AutoLockerStore
     @State private var isShowingBluetoothDebugLogs = false
     @State private var debugTraceText = ""
+    @State private var isLoadingDebugTrace = false
 
-    private let debugLogRefreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private let debugLogRefreshTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    private let debugLogMaxBytes = 120_000
 
     var body: some View {
         ScrollView {
@@ -117,15 +119,21 @@ struct AdvancedView: View {
             BluetoothDebugLogSheet(
                 logText: debugTraceText,
                 logFilePath: FileLocations.debugTraceFile.path,
-                onRefresh: reloadDebugTrace
+                isLoading: isLoadingDebugTrace,
+                onRefresh: reloadDebugTrace,
+                onClose: {
+                    isShowingBluetoothDebugLogs = false
+                }
             )
             .frame(minWidth: 760, minHeight: 560)
             .onAppear {
-                reloadDebugTrace()
+                DispatchQueue.main.async {
+                    reloadDebugTrace()
+                }
             }
         }
         .onReceive(debugLogRefreshTimer) { _ in
-            guard isShowingBluetoothDebugLogs else {
+            guard isShowingBluetoothDebugLogs, !isLoadingDebugTrace else {
                 return
             }
             reloadDebugTrace()
@@ -149,12 +157,25 @@ struct AdvancedView: View {
     }
 
     private func showDebugLogs() {
-        reloadDebugTrace()
         isShowingBluetoothDebugLogs = true
+        DispatchQueue.main.async {
+            reloadDebugTrace()
+        }
     }
 
     private func reloadDebugTrace() {
-        debugTraceText = store.readDebugTraceText()
+        guard !isLoadingDebugTrace else {
+            return
+        }
+
+        isLoadingDebugTrace = true
+        DispatchQueue.global(qos: .utility).async {
+            let text = store.readDebugTraceText(maxBytes: debugLogMaxBytes)
+            DispatchQueue.main.async {
+                debugTraceText = text
+                isLoadingDebugTrace = false
+            }
+        }
     }
 
     private func scheduleDelayedDebugLogRefresh() {
@@ -172,7 +193,9 @@ struct AdvancedView: View {
 private struct BluetoothDebugLogSheet: View {
     let logText: String
     let logFilePath: String
+    let isLoading: Bool
     let onRefresh: () -> Void
+    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -186,18 +209,21 @@ private struct BluetoothDebugLogSheet: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 Button("刷新日志", action: onRefresh)
+                    .disabled(isLoading)
+                Button("关闭", action: onClose)
             }
 
             Divider()
 
-            ScrollView([.vertical, .horizontal]) {
-                Text(logText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(10)
-            }
+            TextEditor(text: .constant(logText))
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         }
         .padding(20)
