@@ -1,7 +1,12 @@
+import Combine
 import SwiftUI
 
 struct AdvancedView: View {
     @EnvironmentObject private var store: AutoLockerStore
+    @State private var isShowingBluetoothDebugLogs = false
+    @State private var debugTraceText = ""
+
+    private let debugLogRefreshTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ScrollView {
@@ -86,6 +91,20 @@ struct AdvancedView: View {
                         InfoLine(title: "绑定信标数", value: "\(store.beacons.count)")
                         InfoLine(title: "日志条数", value: "\(store.logs.count)")
                         InfoLine(title: "蓝牙状态", value: store.scanner.powerState.label)
+                        InfoLine(title: "调试日志", value: FileLocations.debugTraceFile.path)
+                        HStack {
+                            Button("调试蓝牙并显示日志") {
+                                startBluetoothDebug()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("仅查看调试日志") {
+                                showDebugLogs()
+                            }
+                            Spacer()
+                        }
+                        Text("蓝牙调试会向后台 Agent 发起 10 秒可用性检查，并显示共享调试追踪文件中的全部日志。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(4)
                 } label: {
@@ -93,6 +112,23 @@ struct AdvancedView: View {
                 }
             }
             .padding(24)
+        }
+        .sheet(isPresented: $isShowingBluetoothDebugLogs) {
+            BluetoothDebugLogSheet(
+                logText: debugTraceText,
+                logFilePath: FileLocations.debugTraceFile.path,
+                onRefresh: reloadDebugTrace
+            )
+            .frame(minWidth: 760, minHeight: 560)
+            .onAppear {
+                reloadDebugTrace()
+            }
+        }
+        .onReceive(debugLogRefreshTimer) { _ in
+            guard isShowingBluetoothDebugLogs else {
+                return
+            }
+            reloadDebugTrace()
         }
     }
 
@@ -104,5 +140,66 @@ struct AdvancedView: View {
             return
         }
         store.advanced.fieldPriority.swapAt(index, target)
+    }
+
+    private func startBluetoothDebug() {
+        store.runBluetoothAvailabilityDebug()
+        showDebugLogs()
+        scheduleDelayedDebugLogRefresh()
+    }
+
+    private func showDebugLogs() {
+        reloadDebugTrace()
+        isShowingBluetoothDebugLogs = true
+    }
+
+    private func reloadDebugTrace() {
+        debugTraceText = store.readDebugTraceText()
+    }
+
+    private func scheduleDelayedDebugLogRefresh() {
+        for delay in [0.3, 1.2, 10.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard isShowingBluetoothDebugLogs else {
+                    return
+                }
+                reloadDebugTrace()
+            }
+        }
+    }
+}
+
+private struct BluetoothDebugLogSheet: View {
+    let logText: String
+    let logFilePath: String
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("蓝牙调试日志")
+                        .font(.title2.weight(.semibold))
+                    Text(logFilePath)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Button("刷新日志", action: onRefresh)
+            }
+
+            Divider()
+
+            ScrollView([.vertical, .horizontal]) {
+                Text(logText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(10)
+            }
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(20)
     }
 }

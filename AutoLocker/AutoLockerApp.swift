@@ -6,7 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationController.requestAuthorization()
         AppLauncher.registerBackgroundAgentIfPossible()
+        AppLauncher.terminateRunningAgentIfNeeded()
         SharedDebugTrace.log("主应用启动完成")
+        SharedDebugTrace.log("代码签名诊断：\(CodeSigningDiagnostics.debugSummary())")
         AppLauncher.launchBackgroundAgentIfNeeded(reason: "主应用启动")
         NSApp.setActivationPolicy(.regular)
     }

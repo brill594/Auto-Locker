@@ -6,6 +6,7 @@ final class AgentAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationController.requestAuthorization()
         SharedDebugTrace.log("后台 Agent 启动完成")
+        SharedDebugTrace.log("代码签名诊断：\(CodeSigningDiagnostics.debugSummary())")
         NSApp.setActivationPolicy(.accessory)
     }
 

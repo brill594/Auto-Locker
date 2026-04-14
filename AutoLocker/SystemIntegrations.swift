@@ -2,6 +2,7 @@ import AppKit
 import CoreLocation
 import CoreWLAN
 import Foundation
+import Security
 import ServiceManagement
 import UserNotifications
 
@@ -19,8 +20,9 @@ enum AutoLockerProcessContext {
 }
 
 enum AppLauncher {
-    static let mainBundleIdentifier = "com.brilliant.AutoLocker"
-    static let agentBundleIdentifier = "com.brilliant.AutoLocker.Agent"
+    static let mainBundleIdentifier = "com.brilliant.autolocker"
+    static let agentBundleIdentifier = "com.brilliant.autolocker.agent"
+    private static let legacyAgentBundleIdentifiers = ["com.brilliant.AutoLocker.Agent"]
 
     static var hasBundledBackgroundAgent: Bool {
         bundledAgentURL != nil
@@ -47,16 +49,20 @@ enum AppLauncher {
             return
         }
 
-        let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
-        for app in runningAgents where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            SharedDebugTrace.log("终止已有 Agent 进程 pid=\(app.processIdentifier)")
-            app.terminate()
+        for identifier in knownAgentBundleIdentifiers {
+            let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            for app in runningAgents where app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                SharedDebugTrace.log("终止已有 Agent 进程 bundleID=\(identifier) pid=\(app.processIdentifier)")
+                app.terminate()
+            }
         }
     }
 
     static func isBackgroundAgentRunning() -> Bool {
-        let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
-        return runningAgents.contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        knownAgentBundleIdentifiers.contains { identifier in
+            let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            return runningAgents.contains { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        }
     }
 
     static func launchBackgroundAgentIfNeeded(reason: String = "未提供原因") {
@@ -67,6 +73,14 @@ enum AppLauncher {
         guard let agentURL = bundledAgentURL else {
             SharedDebugTrace.log("跳过拉起 Agent：未找到内嵌 Agent，原因=\(reason)")
             return
+        }
+
+        for identifier in legacyAgentBundleIdentifiers {
+            let legacyAgents = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            for app in legacyAgents {
+                SharedDebugTrace.log("终止旧 Bundle ID Agent：bundleID=\(identifier) pid=\(app.processIdentifier)，原因=\(reason)")
+                app.terminate()
+            }
         }
 
         let runningAgents = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier)
@@ -142,6 +156,10 @@ enum AppLauncher {
             .appendingPathComponent("LoginItems")
             .appendingPathComponent("AutoLockerAgent.app")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private static var knownAgentBundleIdentifiers: [String] {
+        [agentBundleIdentifier] + legacyAgentBundleIdentifiers
     }
 
     private static var mainAppURL: URL? {
@@ -337,6 +355,74 @@ enum SharedDebugTrace {
         }
 
         NSLog("AutoLocker trace: \(message)")
+    }
+
+    static func readAll() throws -> String {
+        try queue.sync {
+            let url = FileLocations.debugTraceFile
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                return ""
+            }
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+    }
+}
+
+enum CodeSigningDiagnostics {
+    static func debugSummary() -> String {
+        var parts = [
+            "bundleID=\(Bundle.main.bundleIdentifier ?? "-")",
+            "bundlePath=\(Bundle.main.bundlePath)",
+            "executable=\(Bundle.main.executablePath ?? "-")"
+        ]
+
+        if let task = SecTaskCreateFromSelf(nil) {
+            let teamID = SecTaskCopyValueForEntitlement(
+                task,
+                "com.apple.developer.team-identifier" as CFString,
+                nil
+            ) as? String
+            parts.append("entitlementTeamID=\(teamID ?? "-")")
+        } else {
+            parts.append("entitlementTeamID=-")
+        }
+
+        var code: SecCode?
+        let copySelfStatus = SecCodeCopySelf(SecCSFlags(), &code)
+        parts.append("secCodeCopySelf=\(copySelfStatus)")
+
+        guard copySelfStatus == errSecSuccess, let code else {
+            return parts.joined(separator: " ")
+        }
+
+        var staticCode: SecStaticCode?
+        let copyStaticStatus = SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode)
+        parts.append("secCodeCopyStaticCode=\(copyStaticStatus)")
+
+        guard copyStaticStatus == errSecSuccess, let staticCode else {
+            return parts.joined(separator: " ")
+        }
+
+        var signingInfo: CFDictionary?
+        let signingInfoStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInfo
+        )
+        parts.append("secCodeCopySigningInformation=\(signingInfoStatus)")
+
+        guard signingInfoStatus == errSecSuccess,
+              let info = signingInfo as? [String: Any]
+        else {
+            return parts.joined(separator: " ")
+        }
+
+        parts.append("signingIdentifier=\(info[kSecCodeInfoIdentifier as String] as? String ?? "-")")
+        parts.append("teamID=\(info[kSecCodeInfoTeamIdentifier as String] as? String ?? "-")")
+        if let flags = info[kSecCodeInfoFlags as String] {
+            parts.append("signingFlags=\(flags)")
+        }
+        return parts.joined(separator: " ")
     }
 }
 

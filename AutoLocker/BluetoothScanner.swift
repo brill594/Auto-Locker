@@ -25,6 +25,10 @@ final class BluetoothScanner: NSObject, ObservableObject {
     private let devicesChangeNotifyInterval: TimeInterval = 0.25
     private var centralCreationScheduled = false
     private var shouldRetryAuthorizationAfterActivation = false
+    private var diagnosticsTimer: Timer?
+    private var diagnosticsEndsAt: Date?
+    private var diagnosticsStartedTemporaryScan = false
+    private var diagnosticsDiscoveryCount = 0
 
     override init() {
         super.init()
@@ -39,6 +43,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
     deinit {
         scanTimer?.invalidate()
         devicesChangeNotifyTimer?.invalidate()
+        diagnosticsTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -97,6 +102,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
             )
             isScanning = true
             scanStartedAt = Date()
+            SharedDebugTrace.log("蓝牙扫描启动：duration=\(duration.map { String(format: "%.1f", $0) } ?? "continuous") devices=\(devices.count)")
         }
         configureScanTimer(duration: duration)
         lastError = nil
@@ -123,6 +129,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
         scanStartedAt = Date()
         configureScanTimer(duration: duration)
         lastError = nil
+        SharedDebugTrace.log("蓝牙扫描重启：duration=\(duration.map { String(format: "%.1f", $0) } ?? "continuous") devices=\(devices.count)")
     }
 
     func stopScanning() {
@@ -139,6 +146,7 @@ final class BluetoothScanner: NSObject, ObservableObject {
             isScanning = false
         }
         if shouldFlushDeviceUpdate {
+            SharedDebugTrace.log("蓝牙扫描停止：devices=\(devices.count)")
             notifyDevicesChanged(throttled: false)
         }
     }
@@ -151,22 +159,56 @@ final class BluetoothScanner: NSObject, ObservableObject {
 
     func clearDevices() {
         devices.removeAll()
+        SharedDebugTrace.log("蓝牙扫描结果已清空")
         notifyDevicesChanged(throttled: false)
+    }
+
+    func runAvailabilityDiagnostics(duration: TimeInterval = 10, keepScanningAfterDiagnostics: Bool) {
+        diagnosticsTimer?.invalidate()
+        diagnosticsEndsAt = Date().addingTimeInterval(duration)
+        diagnosticsStartedTemporaryScan = !isScanning && !keepScanningAfterDiagnostics
+        diagnosticsDiscoveryCount = 0
+
+        SharedDebugTrace.log([
+            "蓝牙调试开始",
+            "duration=\(Int(duration))s",
+            "keepScanningAfterDiagnostics=\(keepScanningAfterDiagnostics)",
+            "powerState=\(powerState.rawValue)",
+            "authorization=\(Self.authorizationDebugDescription)",
+            "isScanning=\(isScanning)",
+            "devices=\(devices.count)",
+            "lastError=\(lastError ?? "-")"
+        ].joined(separator: " "))
+
+        if isScanning {
+            SharedDebugTrace.log("蓝牙调试：复用当前扫描，不修改扫描计时器")
+            ensureCentralManagerReady()
+        } else {
+            startScanning(duration: keepScanningAfterDiagnostics ? nil : duration)
+            SharedDebugTrace.log("蓝牙调试：已请求启动扫描，temporary=\(!keepScanningAfterDiagnostics)")
+        }
+
+        diagnosticsTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+            self?.finishAvailabilityDiagnostics()
+        }
     }
 }
 
 private extension BluetoothScanner {
     func ensureCentralManagerReady(forceRecreate: Bool = false) {
         if forceRecreate {
+            SharedDebugTrace.log("蓝牙 central 准备重建：hasCentral=\(central != nil) scheduled=\(centralCreationScheduled)")
             central?.delegate = nil
             central = nil
             powerState = .unknown
+            SharedDebugTrace.log("蓝牙 central 已重建前清理")
         }
 
         guard central == nil, !centralCreationScheduled else {
             return
         }
 
+        SharedDebugTrace.log("蓝牙 central 准备：开始异步创建")
         centralCreationScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -176,6 +218,7 @@ private extension BluetoothScanner {
             guard self.central == nil else {
                 return
             }
+            SharedDebugTrace.log("创建 CBCentralManager")
             self.central = CBCentralManager(delegate: self, queue: .main)
         }
     }
@@ -277,10 +320,73 @@ private extension BluetoothScanner {
         devices = compacted
         notifyDevicesChanged(throttled: false)
     }
+
+    func finishAvailabilityDiagnostics() {
+        let shouldStopTemporaryScan = diagnosticsStartedTemporaryScan && isScanning
+        SharedDebugTrace.log([
+            "蓝牙调试结束",
+            "powerState=\(powerState.rawValue)",
+            "authorization=\(Self.authorizationDebugDescription)",
+            "isScanning=\(isScanning)",
+            "temporaryScan=\(diagnosticsStartedTemporaryScan)",
+            "advertisements=\(diagnosticsDiscoveryCount)",
+            "devices=\(devices.count)",
+            "lastError=\(lastError ?? "-")"
+        ].joined(separator: " "))
+
+        diagnosticsTimer?.invalidate()
+        diagnosticsTimer = nil
+        diagnosticsEndsAt = nil
+        diagnosticsStartedTemporaryScan = false
+
+        if shouldStopTemporaryScan {
+            stopScanning()
+            SharedDebugTrace.log("蓝牙调试：临时扫描已停止")
+        }
+    }
+
+    func logDebugAdvertisement(
+        identifier: String,
+        displayName: String,
+        localName: String?,
+        manufacturerData: Data?,
+        serviceUUIDs: [String],
+        solicitedServiceUUIDs: [String],
+        overflowServiceUUIDs: [String],
+        serviceDataHex: [String: String],
+        txPowerLevel: Int?,
+        isConnectable: Bool?,
+        advertisementKeys: [String],
+        rssi: Int
+    ) {
+        guard let diagnosticsEndsAt, Date() <= diagnosticsEndsAt else {
+            return
+        }
+
+        diagnosticsDiscoveryCount += 1
+        SharedDebugTrace.log([
+            "蓝牙调试发现广播",
+            "index=\(diagnosticsDiscoveryCount)",
+            "id=\(identifier)",
+            "name=\(displayName.isEmpty ? "-" : displayName)",
+            "localName=\(localName ?? "-")",
+            "rssi=\(rssi)",
+            "manufacturerID=\(manufacturerData?.manufacturerCompanyID.map { String(format: "0x%04X", $0) } ?? "-")",
+            "manufacturerData=\(manufacturerData?.hexString ?? "-")",
+            "serviceUUIDs=\(serviceUUIDs.isEmpty ? "-" : serviceUUIDs.joined(separator: ","))",
+            "solicitedServiceUUIDs=\(solicitedServiceUUIDs.isEmpty ? "-" : solicitedServiceUUIDs.joined(separator: ","))",
+            "overflowServiceUUIDs=\(overflowServiceUUIDs.isEmpty ? "-" : overflowServiceUUIDs.joined(separator: ","))",
+            "serviceData=\(serviceDataHex.isEmpty ? "-" : serviceDataHex.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ","))",
+            "txPower=\(txPowerLevel.map(String.init) ?? "-")",
+            "connectable=\(isConnectable.map(String.init) ?? "-")",
+            "keys=\(advertisementKeys.joined(separator: ","))"
+        ].joined(separator: " "))
+    }
 }
 
 extension BluetoothScanner: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        let previousState = powerState
         switch central.state {
         case .unknown:
             powerState = .unknown
@@ -318,6 +424,17 @@ extension BluetoothScanner: CBCentralManagerDelegate {
             powerState = .unknown
             lastError = "系统返回了未知蓝牙状态。"
         }
+        SharedDebugTrace.log([
+            "蓝牙状态更新",
+            "centralState=\(Self.centralStateDebugDescription(central.state))",
+            "previous=\(previousState.rawValue)",
+            "mapped=\(powerState.rawValue)",
+            "authorization=\(Self.authorizationDebugDescription)",
+            "shouldScanWhenReady=\(shouldScanWhenReady)",
+            "pendingDuration=\(pendingScanDuration.map { String(format: "%.1f", $0) } ?? "-")",
+            "isScanning=\(isScanning)",
+            "lastError=\(lastError ?? "-")"
+        ].joined(separator: " "))
         onStateChanged?()
     }
 
@@ -337,6 +454,7 @@ extension BluetoothScanner: CBCentralManagerDelegate {
         let serviceDataHex = serviceDataHex(from: advertisementData[CBAdvertisementDataServiceDataKey])
         let txPowerLevel = intValue(from: advertisementData[CBAdvertisementDataTxPowerLevelKey])
         let isConnectable = boolValue(from: advertisementData[CBAdvertisementDataIsConnectable])
+        let advertisementKeys = advertisementData.keys.sorted()
         let now = Date()
 
         let discovered = DiscoveredDevice(
@@ -352,7 +470,7 @@ extension BluetoothScanner: CBCentralManagerDelegate {
             serviceDataHex: serviceDataHex,
             txPowerLevel: txPowerLevel,
             isConnectable: isConnectable,
-            advertisementKeys: advertisementData.keys.sorted(),
+            advertisementKeys: advertisementKeys,
             rssi: RSSI.intValue,
             lastSeen: now
         )
@@ -364,7 +482,57 @@ extension BluetoothScanner: CBCentralManagerDelegate {
         } else {
             devices.append(discovered)
         }
+        logDebugAdvertisement(
+            identifier: identifier,
+            displayName: displayName,
+            localName: localName,
+            manufacturerData: manufacturerData,
+            serviceUUIDs: serviceUUIDs,
+            solicitedServiceUUIDs: solicitedServiceUUIDs,
+            overflowServiceUUIDs: overflowServiceUUIDs,
+            serviceDataHex: serviceDataHex,
+            txPowerLevel: txPowerLevel,
+            isConnectable: isConnectable,
+            advertisementKeys: advertisementKeys,
+            rssi: RSSI.intValue
+        )
         notifyDevicesChanged(throttled: true)
+    }
+}
+
+extension BluetoothScanner {
+    static var authorizationDebugDescription: String {
+        switch CBCentralManager.authorization {
+        case .notDetermined:
+            return "notDetermined"
+        case .restricted:
+            return "restricted"
+        case .denied:
+            return "denied"
+        case .allowedAlways:
+            return "allowedAlways"
+        @unknown default:
+            return "unknown"
+        }
+    }
+
+    private static func centralStateDebugDescription(_ state: CBManagerState) -> String {
+        switch state {
+        case .unknown:
+            return "unknown"
+        case .resetting:
+            return "resetting"
+        case .unsupported:
+            return "unsupported"
+        case .unauthorized:
+            return "unauthorized"
+        case .poweredOff:
+            return "poweredOff"
+        case .poweredOn:
+            return "poweredOn"
+        @unknown default:
+            return "unknown"
+        }
     }
 }
 

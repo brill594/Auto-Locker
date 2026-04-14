@@ -461,6 +461,26 @@ final class AutoLockerStore: ObservableObject {
         }
     }
 
+    func runBluetoothAvailabilityDebug() {
+        traceDebug("用户启动蓝牙可用性调试：ownsBluetoothScanning=\(ownsBluetoothScanning)")
+        traceDebug("蓝牙调试代码签名诊断：\(CodeSigningDiagnostics.debugSummary())")
+        AppLauncher.launchBackgroundAgentIfNeeded(reason: "蓝牙可用性调试")
+        if ownsBluetoothScanning {
+            runBluetoothAvailabilityDebugLocally()
+        } else {
+            sendAgentCommand(.debugBluetoothAvailability)
+        }
+    }
+
+    func readDebugTraceText() -> String {
+        do {
+            let text = try SharedDebugTrace.readAll()
+            return text.isEmpty ? "暂无调试日志。" : text
+        } catch {
+            return "读取调试日志失败：\(error.localizedDescription)"
+        }
+    }
+
     func startStabilityTest(for beacon: Beacon) {
         if ownsBluetoothScanning {
             stabilitySession = StabilityTestSession(beaconID: beacon.id)
@@ -1467,7 +1487,26 @@ final class AutoLockerStore: ObservableObject {
                 return
             }
             finishStabilityTest(session)
+        case .debugBluetoothAvailability:
+            runBluetoothAvailabilityDebugLocally()
         }
+    }
+
+    private func runBluetoothAvailabilityDebugLocally() {
+        let keepScanning = guardEnabled || scanner.isScanning
+        traceDebug("蓝牙本地调试代码签名诊断：\(CodeSigningDiagnostics.debugSummary())")
+        scanner.runAvailabilityDiagnostics(keepScanningAfterDiagnostics: keepScanning)
+        addLog(
+            .scan,
+            reason: "蓝牙可用性调试已启动：当前状态 \(scanner.powerState.label)",
+            debug: [
+                "bluetoothPowerState": scanner.powerState.rawValue,
+                "bluetoothAuthorization": BluetoothScanner.authorizationDebugDescription,
+                "isScanning": "\(scanner.isScanning)",
+                "discoveredDevices": "\(scanner.devices.count)",
+                "lastError": scanner.lastError ?? ""
+            ]
+        )
     }
 
     private func startManualScanLocally(durationOverride: Int? = nil) {

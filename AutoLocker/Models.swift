@@ -1026,6 +1026,7 @@ enum AgentCommandKind: String, Codable {
     case clearDevices
     case startStabilityTest
     case stopStabilityTest
+    case debugBluetoothAvailability
 }
 
 struct AgentCommand: Codable {
